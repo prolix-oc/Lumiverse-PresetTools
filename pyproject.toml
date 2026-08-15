@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "preset-tools"
+version = "0.1.0"
+description = "Lumiverse preset editing library and MCP server with escaping-safe regex and prompt-variable tooling"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE.md" }
+authors = [
+    { name = "Darran Hall" },
+]
+keywords = [
+    "mcp",
+    "model-context-protocol",
+    "lumiverse",
+    "preset",
+    "regex",
+    "llm",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: Other/Proprietary License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Text Processing :: Markup",
+]
+dependencies = [
+    "mcp>=1.0,<2",  # mcp 2.x removed the bundled mcp.server.fastmcp module
+    "pydantic>=2.0",
+]
+
+[project.optional-dependencies]
+tokenizer = ["tokenizers>=0.15"]
+
+[project.urls]
+Homepage = "https://github.com/prolix-oc/Lumiverse-PresetTools"
+Repository = "https://github.com/prolix-oc/Lumiverse-PresetTools"
+Issues = "https://github.com/prolix-oc/Lumiverse-PresetTools/issues"
+
+[project.scripts]
+preset-tools-mcp = "preset_tools.mcp_server:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["preset_tools*"]
+
+[tool.setuptools.package-data]
+preset_tools = ["*.json", "*.md"]

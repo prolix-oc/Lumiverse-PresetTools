@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "type": "lumiverse_regex_scripts",
+  "scripts": [
+    {
+      "name": "Bold To Strong",
+      "script_id": "sample_bold_strong",
+      "description": "Convert **bold** markdown to <strong> tags.",
+      "find_regex": "\\*\\*(?<text>[^*\\n]+)\\*\\*",
+      "replace_string": "<strong>$<text></strong>",
+      "flags": "g",
+      "enabled": true,
+      "sort_order": 0,
+      "trim_strings": false,
+      "run_on_edit": true,
+      "folder": ""
+    },
+    {
+      "name": "Normalize Horizontal Rules",
+      "script_id": "sample_horizontal_rules",
+      "description": "Normalize --- and *** rules to a canonical --- rule.",
+      "find_regex": "\\n(?:-{3,}|\\*{3,})\\n",
+      "replace_string": "\n---\n",
+      "flags": "g",
+      "enabled": true,
+      "sort_order": 1,
+      "trim_strings": false,
+      "run_on_edit": true,
+      "folder": ""
+    }
+  ]
+}

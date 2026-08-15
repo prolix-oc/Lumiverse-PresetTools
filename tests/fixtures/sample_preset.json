@@ -1,0 +1,156 @@
+{
+  "name": "Sample Story Preset",
+  "version": 1,
+  "blocks": [
+    {
+      "name": "System",
+      "enabled": true,
+      "content": "You are the narrator of an interactive story.\nNarration style: {{var::narration_style}}\nDetail level: {{var::intensity}}"
+    },
+    {
+      "name": "Prose Style",
+      "enabled": true,
+      "content": "Prose mode: {{var::prose_mode}}\nTags: {{var::tags}}\n{{var::verbose_notes}}",
+      "variables": [
+        {
+          "id": "a1b2c3d4-0001-4000-8000-000000000001",
+          "name": "narration_style",
+          "label": "Narration Style",
+          "type": "select",
+          "defaultValue": "cinematic",
+          "options": [
+            { "id": "cinematic", "label": "Cinematic", "value": "sweeping cinematic narration" },
+            { "id": "clinical", "label": "Clinical", "value": "tight clinical prose" },
+            { "id": "poetic", "label": "Poetic", "value": "lush poetic prose" }
+          ]
+        },
+        {
+          "id": "a1b2c3d4-0002-4000-8000-000000000002",
+          "name": "prose_mode",
+          "label": "Prose Mode",
+          "type": "text",
+          "defaultValue": ""
+        },
+        {
+          "id": "a1b2c3d4-0003-4000-8000-000000000003",
+          "name": "intensity",
+          "label": "Intensity",
+          "type": "slider",
+          "defaultValue": 50,
+          "min": 0,
+          "max": 100,
+          "step": 5
+        },
+        {
+          "id": "a1b2c3d4-0004-4000-8000-000000000004",
+          "name": "tags",
+          "label": "Story Tags",
+          "type": "multiselect",
+          "defaultValue": ["slow-burn"],
+          "separator": "\n\n",
+          "options": [
+            { "id": "slow-burn", "label": "Slow Burn", "value": "favor a slow burn" },
+            { "id": "whump", "label": "Whump", "value": "include hurt/comfort beats" },
+            { "id": "banter", "label": "Banter", "value": "keep the banter sharp" }
+          ]
+        },
+        {
+          "id": "a1b2c3d4-0005-4000-8000-000000000005",
+          "name": "verbose_notes",
+          "label": "Verbose Notes",
+          "type": "textarea",
+          "defaultValue": "",
+          "rows": 4
+        }
+      ]
+    }
+  ],
+  "extensions": {
+    "regex_scripts": [
+      {
+        "name": "Format Scene Cards",
+        "script_id": "sample_scene_cards",
+        "description": "Wrap markdown scene headings and bodies in HTML cards.",
+        "find_regex": "(?<title>[^\\n]{1,80})\\n(?<body>[\\s\\S]+?)(?=\\n\\n|$)",
+        "replace_string": "<div class=\"scene-card\"><h4>$<title></h4>$<body></div>",
+        "flags": "g",
+        "enabled": true,
+        "sort_order": 0,
+        "trim_strings": false,
+        "run_on_edit": true,
+        "folder": ""
+      },
+      {
+        "name": "Status Pills",
+        "script_id": "sample_status_pills",
+        "description": "Turn [HP: 12] style markers into styled pills.",
+        "find_regex": "\\[(?<kind>HP|MP|Stress):\\s*(?<value>\\d+)\\]",
+        "replace_string": "<span class=\"pill $<kind>\">$<kind> $<value></span>",
+        "flags": "gi",
+        "enabled": true,
+        "sort_order": 1,
+        "trim_strings": false,
+        "run_on_edit": true,
+        "folder": ""
+      },
+      {
+        "name": "Dialogue Attribution",
+        "script_id": "sample_dialogue",
+        "description": "Reformat Speaker: line dialogue into quoted prose.",
+        "find_regex": "(?<speaker>[A-Z][a-z]+):\\s*(?<line>[^\\n]+)",
+        "replace_string": "\u201c$<line>\u201d \u2014 *$<speaker>*",
+        "flags": "g",
+        "enabled": true,
+        "sort_order": 2,
+        "trim_strings": false,
+        "run_on_edit": true,
+        "folder": "",
+        "actions": [
+          {
+            "title": "Noted $<speaker>",
+            "content": "Dialogue line: $<line>"
+          }
+        ]
+      },
+      {
+        "name": "Collapse Repeated Spaces",
+        "script_id": "sample_collapse_spaces",
+        "description": "Squeeze runs of spaces and tabs down to one space.",
+        "find_regex": "[ \\t]{2,}",
+        "replace_string": " ",
+        "flags": "g",
+        "enabled": true,
+        "sort_order": 3,
+        "trim_strings": false,
+        "run_on_edit": true,
+        "folder": ""
+      },
+      {
+        "name": "Table Cells",
+        "script_id": "sample_table_cells",
+        "description": "Convert pipe-delimited cells to table markup.",
+        "find_regex": "(?<cell>[^|\\n]+)\\|",
+        "replace_string": "<td>$<cell></td> ",
+        "flags": "g",
+        "enabled": true,
+        "sort_order": 4,
+        "trim_strings": false,
+        "run_on_edit": true,
+        "folder": ""
+      },
+      {
+        "name": "Normalize Blank Runs",
+        "script_id": "sample_blank_runs",
+        "description": "Cap consecutive blank lines at one.",
+        "find_regex": "\\n{3,}",
+        "replace_string": "\n\n",
+        "flags": "g",
+        "enabled": true,
+        "sort_order": 5,
+        "trim_strings": false,
+        "run_on_edit": true,
+        "folder": ""
+      }
+    ]
+  }
+}

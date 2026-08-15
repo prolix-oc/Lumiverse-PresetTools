@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+*.egg-info/
+build/
+dist/
+.DS_Store
+.pytest_cache/
+*.mcp_test.json
