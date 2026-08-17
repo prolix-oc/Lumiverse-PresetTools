@@ -64,6 +64,15 @@ from .render import (
     RenderEnv,
     RenderResult,
 )
+from .lumiverse import (
+    find_lumiverse_root,
+    available as lumiverse_available,
+    render_preset_live,
+    diff_render,
+    LiveBlock,
+    LiveRenderResult,
+)
+from .io import stored_prompt_vars
 from .character import (
     get_field as char_get_field,
     set_field as char_set_field,
@@ -117,6 +126,8 @@ __all__ = [
     'ValidationResult', 'Diagnostic', 'parse_template',
     'render_text', 'render_preset', 'render_and_tokenize',
     'print_render_report', 'RenderEnv', 'RenderResult',
+    'find_lumiverse_root', 'lumiverse_available', 'render_preset_live',
+    'diff_render', 'LiveBlock', 'LiveRenderResult', 'stored_prompt_vars',
     'char_get_field', 'char_set_field', 'char_get_summary',
     'char_validate_card', 'char_load', 'char_save', 'CORE_FIELDS',
     'STANDALONE_TYPE', 'new_regex_export', 'new_regex_script',

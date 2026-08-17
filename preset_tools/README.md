@@ -346,7 +346,9 @@ Simply add the `PRESET_TOOLS_LUMIVERSE_ROOT` environment variable to your `openc
 }
 ```
 
-When the MCP server starts, it will automatically detect the backend, use `bun` to extract the live macro registry, generate a fresh reference digest into a temporary folder, and serve that to the LLM. 
+When the MCP server starts, it will automatically detect the backend, use `bun` to extract the live macro registry, generate a fresh reference digest into a temporary folder, and serve that to the LLM. The same root also enables
+[rendering presets against the live engine](#rendering-against-the-live-lumiverse-install)
+(`preset_render`'s `live=True`, or `preset_tools.lumiverse`).
 
 ### Option B: Manual Cache
 
@@ -720,7 +722,7 @@ and a flag whose only setter is a **disabled** block reads empty, collapsing its
 | Category | Behaviour |
 |---|---|
 | Control flow `{{if}}/{{else}}/{{trim}}`, variables, logic, math, strings, formatting, dice | Fully evaluated (dice seeded for reproducibility) |
-| Prompt variables (`variables[]`) | Seeded from defaults; override with `--var name=value` |
+| Prompt variables (`variables[]`) | Seeded from the end-user's stored values (`promptVariables`, keyed by block id) merged over creator defaults; override with `--var name=value` |
 | Identity/persona/chat `{{char}}`, `{{description}}`, … | From `--sample`, or `--value name=text`, else `--unknown` policy |
 | App/extension `{{memories}}`, `{{loomStyle}}`, `{{spotify_*}}`, … | From `--value name=text`, else `--unknown` policy |
 
@@ -775,6 +777,41 @@ print(raw, '->', result.total_tokens)   # e.g. 10463 -> 9453
 one block's content. Token counting needs the `tokenizers` package + a Claude
 `tokenizer.json` (see the tokenizer section); without them, rendering still
 works and `result.total_tokens` is `None` with `result.tokenizer_error` set.
+
+### Rendering against the live Lumiverse install
+
+The offline port above is a faithful reproduction, but it can drift from the
+real backend — and it can never know about macros a newer build ships. When you
+have a local Lumiverse checkout, `preset_tools.lumiverse` renders the preset
+with the *actual* engine, on-device (no API route, no auth, no database):
+
+```python
+from preset_tools import load, render_preset_live, diff_render
+
+preset = load("ThreadBare Working.json")
+
+live = render_preset_live(
+    preset,
+    prompt_var_overrides={"scene_card_on": 1},   # test a conditional
+    sample=True,
+)
+print(live.text)
+
+# Where does the offline port diverge from production?
+result = diff_render(preset, sample=True)
+for d in result["diffs"]:
+    print(d["index"], d["name"], "python" if not d["identical"] else "")
+```
+
+The checkout is discovered from `PRESET_TOOLS_LUMIVERSE_ROOT`, a `root=` /
+`path=` argument, or by walking the preset file's parent directories. `bun`
+must be on `PATH`. The seed values come from the same source the backend reads:
+the end-user's stored `promptVariables` (keyed by block id) merged over creator
+defaults, with `prompt_var_overrides` winning over both.
+
+The `preset_render` MCP tool exposes the same capability — pass
+`prompt_variables={name: value}` to test a value, or `live=True` to render with
+the live engine instead of the bundled port.
 
 ## Common patterns
 

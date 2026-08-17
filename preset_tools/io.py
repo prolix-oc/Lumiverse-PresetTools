@@ -50,3 +50,37 @@ def preset_blocks(preset: dict) -> list[dict]:
     if 'preset' in preset and 'blocks' in preset['preset']:
         return preset['preset']['blocks']
     return preset['blocks']
+
+
+def preset_root(preset: dict) -> dict:
+    """
+    Return the dict that holds the preset's live fields (blocks, prompt
+    variables, prompt behavior, …), regardless of schema.
+
+    ThreadBare keeps everything at the top level; Lucid Loom nests it under
+    preset['preset'].
+    """
+    inner = preset.get('preset')
+    if isinstance(inner, dict) and 'blocks' in inner:
+        return inner
+    return preset
+
+
+def stored_prompt_vars(preset: dict) -> dict:
+    """
+    Return the stored prompt-variable values, keyed by block id.
+
+    Mirrors the backend's ``preset.metadata.promptVariables`` — the end-user's
+    saved values for a preset, merged over the creator's defaults at assembly
+    time. Handles the backend's nested shape (``metadata.promptVariables``),
+    the ThreadBare flat shape (top-level ``promptVariables``), and the Lucid
+    Loom shape (``preset.promptVariables``).
+    """
+    root = preset_root(preset)
+    meta = root.get('metadata')
+    if isinstance(meta, dict) and isinstance(meta.get('promptVariables'), dict):
+        return meta['promptVariables']
+    pv = root.get('promptVariables')
+    if isinstance(pv, dict):
+        return pv
+    return {}

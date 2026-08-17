@@ -103,7 +103,7 @@ save(preset, "My Preset.json")   # writes UTF-8 with literal Unicode preserved
 | `PRESET_TOOLS_WORKSPACE` | Root directory that relative preset paths resolve against. Defaults to the server's working directory. Absolute paths always work. |
 | `PRESET_TOOLS_JS` | Override the JavaScript engine: a path to a `node` binary, or `osascript` to force the macOS fallback. |
 | `PRESET_TOOLS_MACRO_DIR` | Directory to read `macro_reference.json` / `macro_reference.md` from (defaults to the bundled copies). |
-| `PRESET_TOOLS_LUMIVERSE_ROOT` | Optional path to a local Lumiverse checkout; regenerates the macro digest from its live registry at startup. |
+| `PRESET_TOOLS_LUMIVERSE_ROOT` | Optional path to a local Lumiverse checkout; regenerates the macro digest from its live registry at startup and enables `preset_render`'s `live=True` (on-device ground-truth rendering via `bun`). |
 
 > **Tip:** point `PRESET_TOOLS_WORKSPACE` at a dedicated presets directory
 > rather than your home directory. The server can read and write any JSON file

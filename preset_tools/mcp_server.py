@@ -61,6 +61,7 @@ from .inspect import (
 )
 from .io import load, preset_blocks, save
 from .render import RenderEnv, render_preset
+from .lumiverse import render_preset_live
 from .regex_lint import (
     engine_compile,
     engine_compile_many,
@@ -618,6 +619,32 @@ async def preset_render(
     show_text: Annotated[bool, Field(description="Include the full rendered prompt text in the response")] = False,
     seed: Annotated[int, Field(description="RNG seed for dice/random/pick macros")] = 1234,
     unknown_policy: Annotated[Literal["keep", "blank"], Field(description="Policy for unresolved macros: keep literal or blank")] = "keep",
+    prompt_variables: Annotated[
+        Optional[dict[str, Any]],
+        Field(
+            description=(
+                "Prompt-variable overrides for this render, keyed by variable name. "
+                "Each value is coerced per the variable's type (switch→0/1, "
+                "select/multiselect→option ids, number/slider→clamped). Wins over the "
+                "preset's stored values, so a conditional that reads {{var::name}} "
+                "can be tested against a specific value."
+            ),
+        ),
+    ] = None,
+    live: Annotated[
+        bool,
+        Field(
+            description=(
+                "Render with the user's live Lumiverse install (on-device, via bun) "
+                "instead of the bundled offline port. Requires a local Lumiverse "
+                "checkout discoverable via lumiverse_root or PRESET_TOOLS_LUMIVERSE_ROOT."
+            ),
+        ),
+    ] = False,
+    lumiverse_root: Annotated[
+        Optional[str],
+        Field(description="Path to the local Lumiverse checkout (used with live=True)"),
+    ] = None,
 ) -> str:
     """Render a preset's macros to final text and tokenize the result.
 
@@ -625,16 +652,57 @@ async def preset_render(
     sample=False to leave identity/persona macros unresolved. The full rendered
     text can be large; use show_text=False and by_block=True to inspect per-block
     token budgets instead.
+
+    Pass prompt_variables={name: value} to test how a conditional or macro that
+    reads that variable behaves under a specific value. Pass live=True to render
+    with the actual Lumiverse engine from a local checkout (ground truth).
     """
     try:
         preset = _load(path)
+        if live:
+            result = render_preset_live(
+                preset,
+                prompt_var_overrides=prompt_variables,
+                sample=sample,
+                root=lumiverse_root,
+                path=path,
+                tokenize=True,
+            )
+            out: dict[str, Any] = {
+                "file": path,
+                "engine": "live",
+                "backend_root": result.backend_root,
+                "rendered_blocks": len(result.blocks),
+                "total_chars": result.total_chars,
+                "total_tokens": result.total_tokens,
+                "tokenizer_error": result.tokenizer_error,
+                "diagnostics": result.diagnostics,
+            }
+            if by_block:
+                out["blocks"] = [
+                    {
+                        "index": rb.index,
+                        "name": rb.name,
+                        "role": rb.role,
+                        "marker": rb.marker,
+                        "chars": rb.chars,
+                        "tokens": rb.tokens,
+                        "text": rb.text if show_text else None,
+                    }
+                    for rb in result.blocks
+                ]
+            if show_text:
+                out["text"] = result.text
+            return _ok(out)
+
         env = RenderEnv.sample() if sample else RenderEnv.empty()
         env.seed = seed
         env.unknown_policy = unknown_policy
         env.__post_init__()
-        result = render_preset(preset, env)
+        result = render_preset(preset, env, prompt_var_overrides=prompt_variables)
         out: dict[str, Any] = {
             "file": path,
+            "engine": "offline",
             "rendered_blocks": len(result.blocks),
             "total_chars": result.total_chars,
             "total_tokens": result.total_tokens,

@@ -19,7 +19,8 @@ What renders faithfully (deterministic, offline):
       formatting ({{repeat}}/{{bullets}}…), dice ({{random}}/{{pick}}/{{roll}},
       seeded for reproducibility), and basic temporal macros.
     - creator-defined prompt variables (a block's `variables[]`) seeded from
-      their defaults (override with --var name=value).
+      the end-user's stored values (preset `promptVariables`, keyed by block
+      id) merged over their defaults (override either with --var name=value).
 
 What can't render offline (needs the live app): identity/persona/chat macros
 ({{char}}, {{description}}, …) and app macros ({{memories}}, {{loomStyle}},
@@ -54,7 +55,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Callable, Optional
 
-from .io import preset_blocks
+from .io import preset_blocks, stored_prompt_vars
 from .macros import (
     Macro, Scoped, Text, parse_template, VAR_OPS, static_arg_text,
     ESCAPED_OPEN, ESCAPED_CLOSE,
@@ -890,41 +891,128 @@ class RenderResult:
 _POSITION_RANK = {"pre_history": 0, "in_history": 1, "post_history": 2}
 
 
-def _seed_prompt_vars(preset: dict, env: RenderEnv, overrides: dict) -> None:
-    """Seed declared prompt-variable values into the local scope (enabled blocks)."""
+def _resolve_prompt_vars(preset: dict, overrides: dict) -> tuple[dict, dict, dict]:
+    """Resolve declared prompt-variable values (mirrors resolvePromptVariables).
+
+    Reads the end-user's *stored* values (``preset.metadata.promptVariables``)
+    keyed by block id and merges them over creator defaults, with an explicit
+    test ``overrides`` map winning over both — exactly like the live engine.
+    Returns ``(defaults, flat_values, per_block)`` where each maps variable
+    name → rendered string (per_block is keyed by block id).
+    """
+    stored = stored_prompt_vars(preset)
+    defaults: dict = {}
+    flat: dict = {}
+    per_block: dict = {}
     for b in preset_blocks(preset):
         if not b.get("enabled"):
             continue
+        bid = b.get("id")
+        bucket = stored.get(bid, {}) if isinstance(bid, str) else {}
+        pb: dict = {}
         for v in (b.get("variables") or []):
             name = v.get("name")
             if not name:
                 continue
-            rendered = _coerce_prompt_var(v, overrides.get(name))
-            env.prompt_var_defaults[name] = _coerce_prompt_var(v, None)
-            env.local.setdefault(name, rendered)
             if name in overrides:
-                env.local[name] = rendered
+                raw = overrides[name]
+            elif isinstance(bucket, dict) and name in bucket:
+                raw = bucket[name]
+            else:
+                raw = None
+            rendered = _coerce_prompt_var(v, raw)
+            pb[name] = rendered
+            flat[name] = rendered
+            defaults[name] = _coerce_prompt_var(v, None)
+        if pb and isinstance(bid, str):
+            per_block[bid] = pb
+    return defaults, flat, per_block
 
 
 def _coerce_prompt_var(defn: dict, override) -> str:
+    """Coerce a prompt-variable value to its rendered form (mirrors the
+    backend's ``coercePromptVariable`` — select/multiselect map option ids to
+    their *value* text, numbers clamp to min/max, switches collapse to 0/1)."""
     t = defn.get("type", "text")
-    val = override if override is not None else defn.get("defaultValue", "")
+    if t in ("text", "textarea"):
+        if override is None:
+            val = defn.get("defaultValue", "")
+        else:
+            val = override
+        return "" if val is None else str(val)
+    if t == "number":
+        dv = defn.get("defaultValue")
+        fallback = float(dv) if isinstance(dv, (int, float)) else 0.0
+        n = fallback
+        if override is not None:
+            parsed = _try_num(str(override))
+            n = parsed if parsed is not None else fallback
+        return _numstr(_clamp(n, defn.get("min"), defn.get("max")))
+    if t == "slider":
+        dv = defn.get("defaultValue")
+        fallback = float(dv) if isinstance(dv, (int, float)) else (
+            _try_num(str(dv)) if dv is not None and str(dv).strip() else 0.0)
+        if fallback is None:
+            fallback = 0.0
+        n = fallback
+        if override is not None:
+            parsed = _try_num(str(override))
+            n = parsed if parsed is not None else fallback
+        return _numstr(_clamp(n, defn.get("min"), defn.get("max")))
+    if t == "select":
+        options = [o for o in (defn.get("options") or []) if isinstance(o, dict)]
+        valid = {o.get("id") for o in options}
+        dv = defn.get("defaultValue")
+        fallback = dv if dv in valid else (options[0].get("id", "") if options else "")
+        candidate = fallback if override is None else str(override)
+        selected = candidate if candidate in valid else fallback
+        match = next((o for o in options if o.get("id") == selected), None)
+        return match.get("value", "") if isinstance(match, dict) else ""
     if t == "switch":
-        try:
-            return "1" if int(float(val)) else "0"
-        except (ValueError, TypeError):
-            return "1" if str(val).lower() in ("1", "true", "on", "yes") else "0"
-    if t in ("number", "slider"):
-        n = _try_num(str(val))
-        return _numstr(n) if n is not None else str(val)
+        raw = defn.get("defaultValue", 0) if override is None else override
+        if isinstance(raw, bool):
+            on = raw
+        elif isinstance(raw, (int, float)):
+            on = raw == 1
+        else:
+            s = str(raw).strip().lower()
+            on = s in ("1", "true", "on", "yes")
+        return "1" if on else "0"
     if t == "multiselect":
-        if isinstance(val, list):
-            sep = defn.get("separator", ", ")
-            labels = {o.get("id", o.get("value")): o.get("label", o.get("value"))
-                      for o in defn.get("options", [])}
-            return sep.join(str(labels.get(x, x)) for x in val)
-        return str(val)
-    return str(val)
+        options = [o for o in (defn.get("options") or []) if isinstance(o, dict)]
+        valid = {o.get("id") for o in options}
+        if isinstance(override, list):
+            raw_ids = [str(x) for x in override]
+        elif override is None:
+            dv = defn.get("defaultValue")
+            raw_ids = [str(x) for x in dv] if isinstance(dv, list) else []
+        elif isinstance(override, str) and override.strip():
+            raw_ids = [s.strip() for s in override.split(",") if s.strip()]
+        else:
+            raw_ids = []
+        selected = {x for x in raw_ids if x in valid}
+        ordered = [o for o in options if o.get("id") in selected]
+        separator = defn.get("separator") if isinstance(defn.get("separator"), str) else "\n\n"
+        return separator.join(o.get("value", "") for o in ordered)
+    if override is None:
+        val = defn.get("defaultValue", "")
+    else:
+        val = override
+    return "" if val is None else str(val)
+
+
+def _clamp(value: float, minimum, maximum) -> float:
+    if isinstance(minimum, (int, float)) and value < minimum:
+        value = minimum
+    if isinstance(maximum, (int, float)) and value > maximum:
+        value = maximum
+    return value
+
+
+def _normalize_block_text(text: str) -> str:
+    """Mirror the engine's normalizePromptBlockText: collapse runs of 3+
+    newlines to a blank line, then trim leading/trailing whitespace."""
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
 def render_preset(preset: dict, env: Optional[RenderEnv] = None, *,
@@ -933,11 +1021,19 @@ def render_preset(preset: dict, env: Optional[RenderEnv] = None, *,
     """Render every enabled block in render order, threading variable state,
     and (optionally) tokenize the result.
 
+    Prompt variables are seeded the way the engine seeds them: the end-user's
+    *stored* values (``preset.promptVariables``, keyed by block id) are merged
+    over creator defaults, and `prompt_var_overrides` (name → value) wins over
+    both — useful for testing a conditional against a specific value.
+
     The returned RenderResult has `.text` (full prompt), `.blocks` (per-block
     rendered text + token counts), `.total_tokens`, and `.unresolved` (macros
     that had no value and followed the unknown policy)."""
     env = env or RenderEnv.sample()
-    _seed_prompt_vars(preset, env, prompt_var_overrides or {})
+    defaults, flat, per_block = _resolve_prompt_vars(preset, prompt_var_overrides or {})
+    env.prompt_var_defaults.update(defaults)
+    for name, val in flat.items():
+        env.local[name] = val
 
     blocks = preset_blocks(preset)
     ordered = sorted(enumerate(blocks),
@@ -951,16 +1047,32 @@ def render_preset(preset: dict, env: Optional[RenderEnv] = None, *,
         content = b.get("content") or ""
         if not content.strip():
             continue
-        text = render_text(content, env)
-        text_stripped = text.strip()
+        # Overlay this block's own resolved prompt-variable values while it
+        # renders (mirrors withPromptBlockContext), restoring afterward so a
+        # same-named definition in another block can't shadow it.
+        block_values = per_block.get(b.get("id"), {})
+        saved: dict = {}
+        for name, val in block_values.items():
+            saved[name] = (name in env.local, env.local.get(name))
+            env.local[name] = val
+        try:
+            text = render_text(content, env)
+        finally:
+            for name, (existed, prior) in saved.items():
+                if existed:
+                    env.local[name] = prior
+                else:
+                    env.local.pop(name, None)
+        text = _normalize_block_text(text)
+        if not text:
+            continue
         rb = RenderedBlock(
             index=orig_idx, name=b.get("name", f"#{orig_idx}"),
             role=b.get("role", "system"), marker=b.get("marker"),
             text=text, chars=len(text),
         )
         result.blocks.append(rb)
-        if text_stripped:
-            rendered_chunks.append(text_stripped)
+        rendered_chunks.append(text)
 
     result.text = "\n\n".join(rendered_chunks)
     result.total_chars = sum(rb.chars for rb in result.blocks)
