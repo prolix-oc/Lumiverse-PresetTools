@@ -60,6 +60,7 @@ from .inspect import (
     show_block,
 )
 from .io import load, preset_blocks, save
+from .search import search_preset
 from .render import RenderEnv, render_preset
 from .lumiverse import render_preset_live
 from .regex_lint import (
@@ -401,6 +402,56 @@ async def preset_find_blocks_referencing(
         preset = _load(path)
         names = find_blocks_referencing(preset, pattern)
         return _ok({"file": path, "pattern": pattern, "blocks": names})
+    except Exception as exc:
+        return _err(type(exc).__name__, traceback.format_exc())
+
+
+@mcp.tool(
+    name="preset_search",
+    annotations={
+        "title": "Search blocks, prompt variables, and categories",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+async def preset_search(
+    path: PathArg,
+    query: Annotated[str, Field(description="Text to search for (literal substring by default, or a regex when regex=True)", min_length=1)],
+    case_sensitive: Annotated[bool, Field(description="Match case exactly")] = False,
+    regex: Annotated[bool, Field(description="Treat query as a regular expression")] = False,
+    surfaces: Annotated[
+        Optional[list[Literal["blocks", "variables", "categories"]]],
+        Field(description="Which surfaces to search. Defaults to all three: blocks (names + content), variables (prompt-variable definitions), categories (category names)."),
+    ] = None,
+    category: Annotated[
+        Optional[str],
+        Field(description="Restrict results to a single category section (by exact category name)"),
+    ] = None,
+    enabled_only: Annotated[bool, Field(description="Skip disabled blocks")] = False,
+    limit: Annotated[Optional[int], Field(description="Cap the number of returned matches", ge=1)] = None,
+) -> str:
+    """Search a preset for a query across blocks, prompt variables, and categories.
+
+    Returns ordered matches with each hit's surface type, owning block,
+    category section, matched field, and a context snippet. Use this instead
+    of preset_find_blocks_referencing when you need case-insensitive/regex
+    matching, category awareness, or to search prompt-variable definitions.
+    """
+    try:
+        preset = _load(path)
+        result = search_preset(
+            preset,
+            query,
+            case_sensitive=case_sensitive,
+            regex=regex,
+            surfaces=surfaces,
+            category=category,
+            enabled_only=enabled_only,
+            limit=limit,
+        )
+        return _ok({"file": path, **result})
     except Exception as exc:
         return _err(type(exc).__name__, traceback.format_exc())
 

@@ -45,6 +45,7 @@ from .inspect import (
     find_blocks_referencing,
     dump_enabled_to_file,
 )
+from .search import search_preset, list_categories, block_categories
 from .blocks import rename_block, toggle_block
 from .compare import diff_block_counts, side_by_side
 from .validate import (
@@ -121,6 +122,7 @@ __all__ = [
     'rename_block', 'toggle_block',
     'get_section', 'extract_macros', 'show_block',
     'find_blocks_referencing', 'dump_enabled_to_file',
+    'search_preset', 'list_categories', 'block_categories',
     'diff_block_counts', 'side_by_side',
     'validate', 'validate_file', 'print_report', 'variable_report',
     'ValidationResult', 'Diagnostic', 'parse_template',
