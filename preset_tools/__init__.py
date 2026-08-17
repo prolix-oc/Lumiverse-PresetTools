@@ -31,12 +31,16 @@ from .blocks import (
     find_block_index,
     new_block,
     insert_block,
+    move_block,
+    clone_block,
     get_block_lines,
     modify_block,
     modify_block_lines,
     delete_block,
     add_prompt_variable,
     remove_prompt_variable,
+    set_stored_prompt_variable,
+    stored_variable_report,
 )
 from .inspect import (
     get_section,
@@ -47,7 +51,8 @@ from .inspect import (
 )
 from .search import search_preset, list_categories, block_categories
 from .blocks import rename_block, toggle_block
-from .compare import diff_block_counts, side_by_side
+from .compare import diff_block_counts, side_by_side, diff_presets
+from .backup import backup_file, list_backups, restore_backup, auto_backup_enabled
 from .validate import (
     validate,
     validate_file,
@@ -117,13 +122,16 @@ __all__ = [
     'audit', 'token_count', 'list_blocks',
     'count_tokens', 'count_preset', 'count_blocks', 'token_audit', 'get_tokenizer',
     'find_block', 'find_block_index', 'new_block',
-    'insert_block', 'get_block_lines', 'modify_block', 'modify_block_lines', 'delete_block',
+    'insert_block', 'move_block', 'clone_block', 'get_block_lines',
+    'modify_block', 'modify_block_lines', 'delete_block',
     'add_prompt_variable', 'remove_prompt_variable',
+    'set_stored_prompt_variable', 'stored_variable_report',
     'rename_block', 'toggle_block',
     'get_section', 'extract_macros', 'show_block',
     'find_blocks_referencing', 'dump_enabled_to_file',
     'search_preset', 'list_categories', 'block_categories',
-    'diff_block_counts', 'side_by_side',
+    'diff_block_counts', 'side_by_side', 'diff_presets',
+    'backup_file', 'list_backups', 'restore_backup', 'auto_backup_enabled',
     'validate', 'validate_file', 'print_report', 'variable_report',
     'ValidationResult', 'Diagnostic', 'parse_template',
     'render_text', 'render_preset', 'render_and_tokenize',

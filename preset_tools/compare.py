@@ -2,6 +2,9 @@
 Compare module — diff two presets to track changes or weight differences.
 """
 
+from difflib import unified_diff
+from typing import Optional
+
 from .io import preset_blocks
 from .audit import token_count
 
@@ -64,3 +67,89 @@ def side_by_side(preset_a: dict, preset_b: dict, label_a: str = 'A', label_b: st
         print(f'\n=== Only in {label_b} ({len(only_b)}) ===')
         for name in sorted(only_b):
             print(f'  {name}')
+
+
+def diff_presets(
+    preset_a: dict,
+    preset_b: dict,
+    label_a: str = "A",
+    label_b: str = "B",
+    context: int = 3,
+) -> dict:
+    """Return a structured content-level diff between two presets.
+
+    Unlike :func:`side_by_side` (which only compares word counts), this
+    produces a real per-block diff for shared blocks: a unified diff of the
+    content, word/char deltas, enabled-state changes, and prompt-variable
+    definition changes. Blocks present in only one preset are reported in
+    ``only_in_a`` / ``only_in_b``.
+
+    Returns a dict:
+        {
+          "label_a": ..., "label_b": ...,
+          "summary": {"shared": n, "only_a": n, "only_b": n, "changed": n},
+          "only_in_a": [names], "only_in_b": [names],
+          "changed_blocks": [ {name, words, chars, enabled, variables_changed, diff}, ... ],
+        }
+    """
+    a_blocks = {b["name"]: b for b in preset_blocks(preset_a)}
+    b_blocks = {b["name"]: b for b in preset_blocks(preset_b)}
+
+    only_a = sorted(set(a_blocks) - set(b_blocks))
+    only_b = sorted(set(b_blocks) - set(a_blocks))
+    shared = sorted(set(a_blocks) & set(b_blocks))
+
+    changed_blocks = []
+    for name in shared:
+        ba = a_blocks[name]
+        bb = b_blocks[name]
+        ca = ba.get("content") or ""
+        cb = bb.get("content") or ""
+        ea = ba.get("enabled")
+        eb = bb.get("enabled")
+        vars_a = ba.get("variables") or []
+        vars_b = bb.get("variables") or []
+        content_changed = ca != cb
+        enabled_changed = ea != eb
+        variables_changed = vars_a != vars_b
+
+        if not (content_changed or enabled_changed or variables_changed):
+            continue
+
+        entry = {
+            "name": name,
+            "words": {"a": len(ca.split()), "b": len(cb.split())},
+            "chars": {"a": len(ca), "b": len(cb)},
+            "enabled": {"a": ea, "b": eb} if enabled_changed else None,
+            "variables_changed": variables_changed,
+            "content_changed": content_changed,
+        }
+        if content_changed:
+            entry["diff"] = _unified(name, ca, cb, label_a, label_b, context)
+        changed_blocks.append(entry)
+
+    return {
+        "label_a": label_a,
+        "label_b": label_b,
+        "summary": {
+            "shared": len(shared),
+            "only_a": len(only_a),
+            "only_b": len(only_b),
+            "changed": len(changed_blocks),
+        },
+        "only_in_a": only_a,
+        "only_in_b": only_b,
+        "changed_blocks": changed_blocks,
+    }
+
+
+def _unified(name: str, ca: str, cb: str, label_a: str, label_b: str, context: int) -> str:
+    """Return a unified diff string for one shared block's content."""
+    lines = unified_diff(
+        ca.splitlines(keepends=True),
+        cb.splitlines(keepends=True),
+        fromfile=f"{label_a}/{name}",
+        tofile=f"{label_b}/{name}",
+        n=context,
+    )
+    return "".join(lines)

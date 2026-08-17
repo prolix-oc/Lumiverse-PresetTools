@@ -33,15 +33,16 @@ This package is stout about that by default and transparent about it:
 ## What's inside
 
 - **`preset_tools`** — an importable Python library (see the quick start below).
-- **45 MCP tools** over stdio, grouped as:
+- **55 MCP tools** over stdio, grouped as:
 
 | Group | Tools |
 |---|---|
-| Preset blocks | `preset_audit`, `preset_list_blocks`, `preset_find_block`, `preset_show_block`, `preset_get_section`, `preset_get_block_lines`, `preset_get_block_line_range`, `preset_insert_block`, `preset_modify_block`, `preset_edit_block_lines`, `preset_edit_block_line_range`, `preset_delete_block`, `preset_rename_block`, `preset_toggle_block` |
-| Prompt variables | `preset_insert_prompt_variable`, `preset_list_prompt_variables`, `preset_update_prompt_variable`, `preset_remove_prompt_variable`, `preset_variable_report` |
+| Preset blocks | `preset_audit`, `preset_list_blocks`, `preset_find_block`, `preset_show_block`, `preset_get_section`, `preset_get_block_lines`, `preset_get_block_line_range`, `preset_search`, `preset_insert_block`, `preset_move_block`, `preset_clone_block`, `preset_modify_block`, `preset_edit_block_lines`, `preset_edit_block_line_range`, `preset_delete_block`, `preset_rename_block`, `preset_toggle_block` |
+| Prompt variables | `preset_insert_prompt_variable`, `preset_list_prompt_variables`, `preset_update_prompt_variable`, `preset_remove_prompt_variable`, `preset_variable_report`, `preset_get_stored_prompt_variables`, `preset_set_stored_prompt_variable`, `preset_remove_stored_prompt_variable` |
 | Regex scripts | `regex_list_scripts`, `regex_get_script`, `regex_create_script`, `regex_update_script`, `regex_delete_script`, `regex_validate`, `regex_check_pattern` |
-| Validation & compare | `preset_validate`, `preset_compare`, `preset_check_seals`, `preset_set_seal`, `preset_mass_seal` |
+| Validation & compare | `preset_validate`, `preset_compare`, `preset_diff`, `preset_check_seals`, `preset_set_seal`, `preset_mass_seal` |
 | Rendering & tokens | `preset_render`, `preset_extract_macros`, `preset_macro_reference`, `preset_token_count`, `preset_count_tokens`, `preset_dump_enabled` |
+| Backups | `preset_backup`, `preset_list_backups`, `preset_restore_backup` |
 | Character cards | `character_card_read`, `character_card_get_summary`, `character_card_get_field`, `character_card_field_stats`, `character_card_set_field`, `character_card_set_fields`, `character_card_validate` |
 
 Full tool documentation lives in [`preset_tools/README.md`](preset_tools/README.md),
@@ -104,6 +105,8 @@ save(preset, "My Preset.json")   # writes UTF-8 with literal Unicode preserved
 | `PRESET_TOOLS_JS` | Override the JavaScript engine: a path to a `node` binary, or `osascript` to force the macOS fallback. |
 | `PRESET_TOOLS_MACRO_DIR` | Directory to read `macro_reference.json` / `macro_reference.md` from (defaults to the bundled copies). |
 | `PRESET_TOOLS_LUMIVERSE_ROOT` | Optional path to a local Lumiverse checkout; regenerates the macro digest from its live registry at startup and enables `preset_render`'s `live=True` (on-device ground-truth rendering via `bun`). |
+| `PRESET_TOOLS_AUTO_BACKUP` | `1` (default) snapshots files before every write; set `0`/`off` to disable. |
+| `PRESET_TOOLS_BACKUP_DIR` | Override where backups are written (default: `.preset-backups` next to each file). |
 
 > **Tip:** point `PRESET_TOOLS_WORKSPACE` at a dedicated presets directory
 > rather than your home directory. The server can read and write any JSON file

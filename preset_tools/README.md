@@ -202,6 +202,7 @@ can reference presets outside the workspace directory.
 | `preset_find_block` | Get a single block by name |
 | `preset_show_block` | Pretty-print a block's content |
 | `preset_find_blocks_referencing` | Find blocks containing a substring |
+| `preset_search` | Unified search across blocks, prompt variables, and categories |
 | `preset_get_section` | Get all blocks under a category marker |
 | `preset_extract_macros` | List `{{...}}` macros used in a block |
 | `preset_token_count` | Estimate tokens (chars // 4) |
@@ -209,17 +210,26 @@ can reference presets outside the workspace directory.
 | `preset_validate` | Macro syntax + variable-flow checker |
 | `preset_variable_report` | Per-variable read/write/check map |
 | `preset_render` | Render macros and tokenize the final prompt |
-| `preset_compare` | Compare two presets block-by-block |
+| `preset_compare` | Compare two presets block-by-block (word counts) |
+| `preset_diff` | Content-level diff of two presets (unified diff per block) |
 | `preset_edit_block_lines` | Edit a line, or a range if you explicitly provide `end_line` |
 | `preset_edit_block_line_range` | Preferred way to replace an exact numbered line range and save |
 | `preset_modify_block` | Replace a block's content and save |
 | `preset_insert_block` | Add a new block and save |
+| `preset_move_block` | Move a block to a new position and save |
+| `preset_clone_block` | Deep-copy a block (fresh id, new name) and save |
 | `preset_delete_block` | Remove a block and save |
 | `preset_rename_block` | Rename a block and save |
 | `preset_toggle_block` | Enable/disable a block and save |
 | `preset_dump_enabled` | Write enabled blocks to a text file |
 | `preset_insert_prompt_variable` | Add a prompt variable definition to a block and optionally inject `{{var::name}}` into its content |
 | `preset_remove_prompt_variable` | Remove a prompt variable definition from a block |
+| `preset_get_stored_prompt_variables` | Read the end-user's stored prompt-variable values |
+| `preset_set_stored_prompt_variable` | Set a stored prompt-variable value and save |
+| `preset_remove_stored_prompt_variable` | Remove a stored value (fall back to default) and save |
+| `preset_backup` | Create a timestamped backup copy of a file |
+| `preset_list_backups` | List backups for a file |
+| `preset_restore_backup` | Restore a file from a backup |
 | `preset_macro_reference` | Look up Lumiverse macro purpose, aliases, args, and usage |
 | `regex_list_scripts` | List embedded or standalone Lumiverse regex scripts |
 | `regex_get_script` | Read one complete regex script by `script_id` or exact name |
@@ -243,6 +253,20 @@ fallback tool with optional `end_line`.
 
 Keep `preset_find_block`, `preset_show_block`, and `preset_modify_block` for
 whole-block inspection or replacement.
+
+### Backups
+
+Every write tool snapshots the file before saving, so a bad edit can always be
+undone. Backups are timestamped copies in a `.preset-backups` directory next to
+the file (or `PRESET_TOOLS_BACKUP_DIR` when set). Control the behavior with:
+
+- `PRESET_TOOLS_AUTO_BACKUP` — `1` (default, on) or `0`/`off` to disable
+  automatic pre-write snapshots.
+- `PRESET_TOOLS_BACKUP_DIR` — override where backups are written.
+
+Use `preset_list_backups` to inspect available snapshots and
+`preset_restore_backup` to roll back (which itself snapshots the current file
+first). `preset_backup` creates an explicit snapshot on demand.
 
 ### Regex script editing
 
@@ -392,12 +416,16 @@ If you prefer not to pay the extraction cost on every server start, you can gene
 - **`find_block_index(preset, name) -> int | None`** — Index of first match.
 - **`new_block(name, content, ...) -> dict`** — Construct a new block with fresh UUID. Defaults: `role='system'`, `enabled=True`, `position='pre_history'`.
 - **`insert_block(preset, block, after=..., before=..., at_index=...) -> int`** — Insert at named position. Specify exactly one of after/before/at_index.
+- **`move_block(preset, name, *, after=..., before=..., at_index=...) -> dict`** — Move an existing block to a new position.
+- **`clone_block(preset, name, new_name=None, *, after=..., before=..., at_index=...) -> dict`** — Deep-copy a block with a fresh id and name.
 - **`get_block_lines(preset, name, start_line=1, end_line=None) -> dict`** — Return numbered lines from a block. Line numbers are 1-based and inclusive; if `end_line` is omitted, the slice runs to the end of the block.
 - **`modify_block(preset, name, new_content) -> dict`** — Replace block content. Returns the updated block.
 - **`modify_block_lines(preset, name, start_line, *, new_content, end_line=None) -> dict`** — Replace a specific line or line range in-place. Use this for surgical edits instead of re-sending the whole block.
 - **`delete_block(preset, name) -> dict`** — Remove and return the block.
 - **`rename_block(preset, old_name, new_name) -> dict`** — Rename in place.
 - **`toggle_block(preset, name, enabled: bool) -> dict`** — Enable/disable.
+- **`set_stored_prompt_variable(preset, block_name, var_name, value, *, remove=False) -> dict`** — Set/remove a stored (end-user) prompt-variable value, keyed by block id.
+- **`stored_variable_report(preset) -> list[dict]`** — Stored values resolved to block names.
 
 ### Inspect (`preset_tools.inspect`)
 
@@ -411,6 +439,20 @@ If you prefer not to pay the extraction cost on every server start, you can gene
 
 - **`diff_block_counts(preset_a, preset_b, label_a, label_b) -> None`** — Print totals comparison.
 - **`side_by_side(preset_a, preset_b, label_a, label_b) -> None`** — Block-by-block alignment, showing shared / only-in-A / only-in-B.
+- **`diff_presets(preset_a, preset_b, label_a, label_b, context=3) -> dict`** — Structured content-level diff (unified diffs, word/char deltas, enabled/variable changes, only-in-A/B).
+
+### Search (`preset_tools.search`)
+
+- **`search_preset(preset, query, *, case_sensitive=False, regex=False, surfaces=None, category=None, enabled_only=False, limit=None) -> dict`** — Search blocks, prompt variables, and categories with snippets and category membership.
+- **`list_categories(preset) -> list[str]`** — Category header names in order.
+- **`block_categories(preset) -> list[dict]`** — Per-block category membership.
+
+### Backup (`preset_tools.backup`)
+
+- **`backup_file(path) -> str | None`** — Snapshot a file into `.preset-backups` (or `PRESET_TOOLS_BACKUP_DIR`).
+- **`list_backups(path) -> list[dict]`** — List backups for a file.
+- **`restore_backup(path, backup) -> str`** — Restore a file from a backup (snapshotting the current file first).
+- **`auto_backup_enabled() -> bool`** — Whether `PRESET_TOOLS_AUTO_BACKUP` enables pre-write snapshots.
 
 ### Validate (`preset_tools.validate`, `preset_tools.macros`)
 

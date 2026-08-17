@@ -7,8 +7,9 @@ All operations work in-place on the preset dict. Save with io.save() after.
 import re
 import uuid
 import json
+import copy
 from typing import Any, Optional
-from .io import preset_blocks
+from .io import preset_blocks, preset_root, stored_prompt_vars
 
 
 def _slugify(name: str) -> str:
@@ -167,6 +168,95 @@ def insert_block(
 
     blocks.insert(idx, block)
     return idx
+
+
+def move_block(
+    preset: dict,
+    name: str,
+    *,
+    after: Optional[str] = None,
+    before: Optional[str] = None,
+    at_index: Optional[int] = None,
+) -> dict:
+    """
+    Move an existing block to a new position. Returns the moved block.
+
+    Specify exactly ONE of ``after``, ``before``, or ``at_index``:
+        after='Block Name'      — move to immediately after named block
+        before='Block Name'     — move to immediately before named block
+        at_index=5              — move to a literal index (0-based)
+
+    Target positions are resolved against the list *after* the block is
+    removed, so ``after``/``before`` behave intuitively. Moving a block
+    after/before itself is rejected.
+    """
+    blocks = preset_blocks(preset)
+    idx = find_block_index(preset, name)
+    if idx is None:
+        raise ValueError(f"Block '{name}' not found")
+
+    args = sum(x is not None for x in (after, before, at_index))
+    if args != 1:
+        raise ValueError("Specify exactly one of: after, before, at_index")
+
+    if after == name or before == name:
+        raise ValueError("Cannot move a block relative to itself")
+
+    block = blocks.pop(idx)
+
+    if after is not None:
+        t = find_block_index(preset, after)
+        if t is None:
+            blocks.insert(idx, block)
+            raise ValueError(f"Block '{after}' not found")
+        blocks.insert(t + 1, block)
+    elif before is not None:
+        t = find_block_index(preset, before)
+        if t is None:
+            blocks.insert(idx, block)
+            raise ValueError(f"Block '{before}' not found")
+        blocks.insert(t, block)
+    else:
+        if at_index < 0 or at_index > len(blocks):
+            blocks.insert(idx, block)
+            raise ValueError(f"at_index {at_index} out of range 0..{len(blocks)}")
+        blocks.insert(at_index, block)
+
+    return block
+
+
+def clone_block(
+    preset: dict,
+    name: str,
+    new_name: Optional[str] = None,
+    *,
+    after: Optional[str] = None,
+    before: Optional[str] = None,
+    at_index: Optional[int] = None,
+) -> dict:
+    """
+    Deep-copy a block and insert the copy. Returns the cloned block.
+
+    The clone gets a fresh ``id`` and a new name (defaults to ``{name} (copy)``).
+    If the source block is sealed, the clone's ``sealedKey`` is regenerated to
+    match the new name. By default the clone is inserted immediately after the
+    source; pass exactly one of ``after``/``before``/``at_index`` to override.
+    """
+    block = find_block(preset, name)
+    if block is None:
+        raise ValueError(f"Block '{name}' not found")
+
+    clone = copy.deepcopy(block)
+    clone['id'] = str(uuid.uuid4())
+    clone['name'] = new_name or f"{block['name']} (copy)"
+    if clone.get('sealed'):
+        clone['sealedKey'] = _slugify(clone['name'])
+
+    args = sum(x is not None for x in (after, before, at_index))
+    if args == 0:
+        after = name
+    insert_block(preset, clone, after=after, before=before, at_index=at_index)
+    return clone
 
 
 def modify_block(preset: dict, name: str, new_content: str) -> dict:
@@ -607,6 +697,89 @@ def remove_prompt_variable(preset: dict, block_name: str, var_name: str) -> dict
         if var.get('name') == var_name:
             return variables.pop(i)
     raise ValueError(f"Variable '{var_name}' not found in block '{block_name}'")
+
+
+# ---------------------------------------------------------------------------
+# Stored prompt-variable values (the end-user's saved settings)
+# ---------------------------------------------------------------------------
+
+def _stored_container(preset: dict) -> dict:
+    """Return the dict that holds stored prompt-variable values, creating it if
+    needed. Mirrors the read precedence in :func:`stored_prompt_vars`."""
+    root = preset_root(preset)
+    meta = root.get('metadata')
+    if isinstance(meta, dict) and isinstance(meta.get('promptVariables'), dict):
+        return meta['promptVariables']
+    pv = root.get('promptVariables')
+    if isinstance(pv, dict):
+        return pv
+    if not isinstance(meta, dict):
+        meta = root.setdefault('metadata', {})
+    return meta.setdefault('promptVariables', {})
+
+
+def stored_variable_report(preset: dict) -> list[dict]:
+    """Return stored prompt-variable values resolved to block names.
+
+    Each entry is ``{block, block_id, values}`` where ``values`` maps variable
+    name to the end-user's stored value. Blocks with no stored values are
+    omitted.
+    """
+    stored = stored_prompt_vars(preset)
+    out: list[dict] = []
+    for b in preset_blocks(preset):
+        bid = b.get('id')
+        if not bid:
+            continue
+        values = stored.get(bid)
+        if isinstance(values, dict) and values:
+            out.append({'block': b.get('name'), 'block_id': bid, 'values': values})
+    return out
+
+
+def set_stored_prompt_variable(
+    preset: dict,
+    block_name: str,
+    var_name: str,
+    value: Any,
+    *,
+    remove: bool = False,
+) -> dict:
+    """Set (or remove) a stored prompt-variable value for a block.
+
+    Verifies the variable is defined on the block, coerces ``value`` to the
+    variable's type, and writes it into the preset's stored-value container
+    (keyed by block id). Returns ``{block, block_id, variable, value}``.
+    """
+    block = find_block(preset, block_name)
+    if block is None:
+        raise ValueError(f"Block '{block_name}' not found")
+
+    bid = block.get('id')
+    if not bid:
+        raise ValueError(f"Block '{block_name}' has no id")
+
+    variables = block.get('variables') or []
+    var_def = next((v for v in variables if v.get('name') == var_name), None)
+    if var_def is None:
+        raise ValueError(f"Variable '{var_name}' not found in block '{block_name}'")
+
+    container = _stored_container(preset)
+    block_values = container.setdefault(bid, {})
+
+    if remove:
+        block_values.pop(var_name, None)
+        if not block_values:
+            container.pop(bid, None)
+        return {'block': block_name, 'block_id': bid, 'variable': var_name, 'value': None}
+
+    coerced = _coerce_default_value(
+        var_def.get('type', 'text'),
+        value,
+        var_def.get('options'),
+    )
+    block_values[var_name] = coerced
+    return {'block': block_name, 'block_id': bid, 'variable': var_name, 'value': coerced}
 
 
 # ---------------------------------------------------------------------------

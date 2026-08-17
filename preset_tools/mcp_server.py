@@ -33,8 +33,10 @@ from pydantic import Field
 from mcp.server.fastmcp import FastMCP
 
 from .audit import audit, list_blocks, token_count
+from .backup import auto_backup_enabled, backup_file, list_backups, restore_backup
 from .blocks import (
     add_prompt_variable,
+    clone_block,
     delete_block,
     find_block,
     find_block_index,
@@ -45,13 +47,17 @@ from .blocks import (
     mass_set_seal,
     modify_block,
     modify_block_lines,
+    move_block,
     new_block,
     remove_prompt_variable,
     rename_block,
     set_block_seal,
+    set_stored_prompt_variable,
+    stored_variable_report,
     toggle_block,
     update_prompt_variable,
 )
+from .compare import diff_presets
 from .inspect import (
     dump_enabled_to_file,
     extract_macros,
@@ -133,7 +139,17 @@ def _load(path: str) -> dict:
 
 
 def _save(preset: dict, path: str) -> None:
-    save(preset, str(_resolve_path(path)))
+    resolved = _resolve_path(path)
+    if auto_backup_enabled():
+        backup_file(str(resolved))
+    save(preset, str(resolved))
+
+
+def _save_card(card: dict, path: str) -> None:
+    resolved = _resolve_path(path)
+    if auto_backup_enabled():
+        backup_file(str(resolved))
+    _char.save_card(card, str(resolved))
 
 
 def _ok(result: Any) -> str:
@@ -834,6 +850,43 @@ async def preset_compare(
             f"only_in_{label_a}": only_a,
             f"only_in_{label_b}": only_b,
         })
+    except Exception as exc:
+        return _err(type(exc).__name__, traceback.format_exc())
+
+
+@mcp.tool(
+    name="preset_diff",
+    annotations={
+        "title": "Content-level diff of two presets",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+async def preset_diff(
+    path_a: Annotated[str, Field(description="Path to the first preset, relative to the workspace root", min_length=1)],
+    path_b: Annotated[str, Field(description="Path to the second preset, relative to the workspace root", min_length=1)],
+    label_a: Annotated[Optional[str], Field(description="Label for preset A")] = None,
+    label_b: Annotated[Optional[str], Field(description="Label for preset B")] = None,
+    context: Annotated[int, Field(description="Lines of context around each diff hunk", ge=0, le=20)] = 3,
+) -> str:
+    """Diff two presets block-by-block with real content diffs.
+
+    Unlike preset_compare (word-count summary), this returns a unified diff of
+    each changed shared block's content, plus word/char deltas, enabled-state
+    changes, and which blocks exist in only one preset.
+    """
+    try:
+        a = _load(path_a)
+        b = _load(path_b)
+        result = diff_presets(
+            a, b,
+            label_a=label_a or path_a,
+            label_b=label_b or path_b,
+            context=context,
+        )
+        return _ok(result)
     except Exception as exc:
         return _err(type(exc).__name__, traceback.format_exc())
 
@@ -1939,6 +1992,98 @@ async def preset_remove_prompt_variable(
 
 
 @mcp.tool(
+    name="preset_get_stored_prompt_variables",
+    annotations={
+        "title": "Get stored prompt-variable values",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+async def preset_get_stored_prompt_variables(path: PathArg) -> str:
+    """Return the end-user's stored prompt-variable values, resolved to blocks.
+
+    These are the saved values (as opposed to the creator's defaults) that the
+    renderer merges over defaults at assembly time.
+    """
+    try:
+        preset = _load(path)
+        rows = stored_variable_report(preset)
+        return _ok({
+            "file": path,
+            "blocks_with_stored_values": len(rows),
+            "blocks": rows,
+        })
+    except Exception as exc:
+        return _err(type(exc).__name__, traceback.format_exc())
+
+
+@mcp.tool(
+    name="preset_set_stored_prompt_variable",
+    annotations={
+        "title": "Set a stored prompt-variable value",
+        "readOnlyHint": False,
+        "destructiveHint": True,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+async def preset_set_stored_prompt_variable(
+    path: PathArg,
+    block_name: Annotated[str, Field(description="Exact name of the block that owns the variable", min_length=1)],
+    var_name: Annotated[str, Field(description="Exact name of the variable", min_length=1)],
+    value: Annotated[
+        Any,
+        Field(
+            description=(
+                "New stored value. Coerced per the variable's type: switch→0/1, "
+                "select→option id, multiselect→list of option ids, number/slider→number, "
+                "text/textarea→string."
+            ),
+        ),
+    ],
+) -> str:
+    """Set the stored (end-user) value of a prompt variable and save.
+
+    Distinct from preset_update_prompt_variable, which edits the variable
+    definition's default. This writes the per-block saved value.
+    """
+    try:
+        preset = _load(path)
+        result = set_stored_prompt_variable(preset, block_name, var_name, value)
+        _save(preset, path)
+        return _ok({"file": path, "saved": True, **result})
+    except Exception as exc:
+        return _err(type(exc).__name__, traceback.format_exc())
+
+
+@mcp.tool(
+    name="preset_remove_stored_prompt_variable",
+    annotations={
+        "title": "Remove a stored prompt-variable value",
+        "readOnlyHint": False,
+        "destructiveHint": True,
+        "idempotentHint": False,
+        "openWorldHint": False,
+    },
+)
+async def preset_remove_stored_prompt_variable(
+    path: PathArg,
+    block_name: Annotated[str, Field(description="Exact name of the block that owns the variable", min_length=1)],
+    var_name: Annotated[str, Field(description="Exact name of the variable", min_length=1)],
+) -> str:
+    """Remove a stored value so the variable falls back to its default and save."""
+    try:
+        preset = _load(path)
+        result = set_stored_prompt_variable(preset, block_name, var_name, None, remove=True)
+        _save(preset, path)
+        return _ok({"file": path, "saved": True, **result})
+    except Exception as exc:
+        return _err(type(exc).__name__, traceback.format_exc())
+
+
+@mcp.tool(
     name="preset_insert_block",
     annotations={
         "title": "Insert a new block",
@@ -2011,6 +2156,72 @@ async def preset_delete_block(
         _save(preset, path)
         return _ok({"file": path, "block": name, "saved": True,
                     "removed": {"id": removed.get("id"), "marker": removed.get("marker")}})
+    except Exception as exc:
+        return _err(type(exc).__name__, traceback.format_exc())
+
+
+@mcp.tool(
+    name="preset_move_block",
+    annotations={
+        "title": "Move a block to a new position",
+        "readOnlyHint": False,
+        "destructiveHint": True,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+async def preset_move_block(
+    path: PathArg,
+    name: Annotated[str, Field(description="Exact name of the block to move", min_length=1)],
+    after: Annotated[Optional[str], Field(description="Move to immediately after this named block")] = None,
+    before: Annotated[Optional[str], Field(description="Move to immediately before this named block")] = None,
+    at_index: Annotated[Optional[int], Field(description="Move to this 0-based index", ge=0)] = None,
+) -> str:
+    """Move a block to a new position and save. Specify exactly one of after, before, or at_index."""
+    try:
+        preset = _load(path)
+        block = move_block(preset, name, after=after, before=before, at_index=at_index)
+        new_index = find_block_index(preset, name)
+        _save(preset, path)
+        return _ok({"file": path, "block": name, "new_index": new_index, "saved": True})
+    except Exception as exc:
+        return _err(type(exc).__name__, traceback.format_exc())
+
+
+@mcp.tool(
+    name="preset_clone_block",
+    annotations={
+        "title": "Clone a block",
+        "readOnlyHint": False,
+        "destructiveHint": True,
+        "idempotentHint": False,
+        "openWorldHint": False,
+    },
+)
+async def preset_clone_block(
+    path: PathArg,
+    name: Annotated[str, Field(description="Exact name of the block to clone", min_length=1)],
+    new_name: Annotated[Optional[str], Field(description="Name for the clone (defaults to '{name} (copy)')")] = None,
+    after: Annotated[Optional[str], Field(description="Insert the clone after this named block (defaults to the source block)")] = None,
+    before: Annotated[Optional[str], Field(description="Insert the clone before this named block")] = None,
+    at_index: Annotated[Optional[int], Field(description="Insert the clone at this 0-based index", ge=0)] = None,
+) -> str:
+    """Deep-copy a block (fresh id, new name) and save.
+
+    The clone is inserted right after the source block unless after/before/
+    at_index is given. Sealed blocks get a regenerated sealedKey.
+    """
+    try:
+        preset = _load(path)
+        clone = clone_block(preset, name, new_name, after=after, before=before, at_index=at_index)
+        idx = find_block_index(preset, clone["name"])
+        _save(preset, path)
+        return _ok({
+            "file": path,
+            "block": name,
+            "clone": {"name": clone["name"], "id": clone["id"], "index": idx},
+            "saved": True,
+        })
     except Exception as exc:
         return _err(type(exc).__name__, traceback.format_exc())
 
@@ -2235,6 +2446,88 @@ async def preset_dump_enabled(
 
 
 # ---------------------------------------------------------------------------
+# Backup / restore
+# ---------------------------------------------------------------------------
+
+@mcp.tool(
+    name="preset_backup",
+    annotations={
+        "title": "Back up a preset file",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": False,
+        "openWorldHint": False,
+    },
+)
+async def preset_backup(path: PathArg) -> str:
+    """Create a timestamped backup copy of a file and return its path.
+
+    Backups are stored in a .preset-backups directory next to the file (or
+    PRESET_TOOLS_BACKUP_DIR when set).
+    """
+    try:
+        resolved = _resolve_path(path)
+        backup_path = backup_file(str(resolved))
+        if backup_path is None:
+            return _err(f"file '{path}' does not exist")
+        return _ok({"file": path, "backup": backup_path, "saved": True})
+    except Exception as exc:
+        return _err(type(exc).__name__, traceback.format_exc())
+
+
+@mcp.tool(
+    name="preset_list_backups",
+    annotations={
+        "title": "List backups for a file",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+async def preset_list_backups(path: PathArg) -> str:
+    """List the available backup copies for a file, oldest first."""
+    try:
+        _resolve_path(path)
+        backups = list_backups(path)
+        return _ok({"file": path, "count": len(backups), "backups": backups})
+    except Exception as exc:
+        return _err(type(exc).__name__, traceback.format_exc())
+
+
+@mcp.tool(
+    name="preset_restore_backup",
+    annotations={
+        "title": "Restore a preset from backup",
+        "readOnlyHint": False,
+        "destructiveHint": True,
+        "idempotentHint": False,
+        "openWorldHint": False,
+    },
+)
+async def preset_restore_backup(
+    path: PathArg,
+    backup: Annotated[
+        str,
+        Field(
+            description=(
+                "Backup to restore: a filename from preset_list_backups, or an "
+                "absolute path to a backup file."
+            ),
+            min_length=1,
+        ),
+    ],
+) -> str:
+    """Restore a file from a backup, snapshotting the current file first."""
+    try:
+        resolved = _resolve_path(path)
+        restored = restore_backup(str(resolved), backup)
+        return _ok({"file": path, "restored": restored, "saved": True})
+    except Exception as exc:
+        return _err(type(exc).__name__, traceback.format_exc())
+
+
+# ---------------------------------------------------------------------------
 # Macro reference
 # ---------------------------------------------------------------------------
 
@@ -2440,7 +2733,7 @@ async def character_card_set_field(
         resolved = _resolve_path(path)
         card = _char.load_card(str(resolved))
         _char.set_field(card, field, value)
-        _char.save_card(card, str(resolved))
+        _save_card(card, path)
         return _ok({"file": path, "field": field, "saved": True})
     except Exception as exc:
         return _err(type(exc).__name__, traceback.format_exc())
@@ -2503,7 +2796,7 @@ async def character_card_set_fields(
         card = _char.load_card(str(resolved))
         for field, value in updates.items():
             _char.set_field(card, field, value)
-        _char.save_card(card, str(resolved))
+        _save_card(card, path)
         return _ok({"file": path, "updated_fields": list(updates.keys()), "saved": True})
     except Exception as exc:
         return _err(type(exc).__name__, traceback.format_exc())
