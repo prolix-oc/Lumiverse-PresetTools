@@ -4,14 +4,15 @@ validate.py — macro syntax + structure checker for Lumiverse preset JSON.
 What it checks
 --------------
 1. STRUCTURE (can it parse / will it render the way the author intends?)
+   Malformed macro syntax is an ERROR (in enabled and disabled blocks alike):
    - unterminated macros: `{{getvar::x` with no closing `}}`            [error]
-   - empty macros: `{{}}` / `{{::x}}` (no macro name)                    [warning]
-   - orphaned close tags: `{{/if}}` with no matching opener             [warning]
-   - unclosed `{{if}}`: opens a conditional but never `{{/if}}` it       [warning]
+   - empty macros: `{{}}` / `{{::x}}` (no macro name)                    [error]
+   - orphaned close tags: `{{/if}}` with no matching opener             [error]
+   - unclosed `{{if}}`: opens a conditional but never `{{/if}}` it       [error]
      (the engine degrades it to an inline true/empty and the "body" is
       emitted unconditionally — almost always a bug)
-   - `{{else}}` outside of an `{{if}}` block                            [warning]
-   - unknown macro names (likely typos; render literally in the prompt)  [warning]
+   - `{{else}}` outside of an `{{if}}` block                            [error]
+   - unknown macro names (likely typos; render literally in the prompt)  [info]
 
 2. VARIABLE FLOW (are variables that are read actually set first?)
    Mirrors the engine's three scopes — local `{{.x}}`, global `{{$x}}`,
@@ -22,12 +23,21 @@ What it checks
      declared prompt variable) is almost always a typo / missing setter   [warning]
    - a variable read *before* the block that sets it (in render order)    [info]
    - a variable only set inside an `{{if}}` branch, then read later        [info]
-   - global/chat variables read but never set in this preset may be set
-     in a previous turn or another preset, so they're only flagged        [info]
+    - global/chat variables read but never set in this preset may be set
+      in a previous turn or another preset, so they're only flagged        [info]
+    - DISABLED blocks are still checked for valid macro names and for
+      variable reads that are never set anywhere in the preset (a typo in a
+      disabled block is still a bug)                                        [warning]
+   Reads that sit inside a conditional guard (`{{if}}` condition or body, or
+   the args of `and`/`or`/`not`/`eq`/`ne`/`gt`/`gte`/`lt`/`lte`) are treated
+   as emptiness-safe: the "may be unset" info notes (`conditional-set-before-
+   read`, `read-before-set`, `set-only-in-disabled`, `never-set-external`) are
+   suppressed for them. A truly-never-set local var (`never-set`) still warns.
 
-Unknown macros and unset reads are NOT fatal in the engine (unknown macros
-pass through as literal text; unset reads resolve to ""), so most findings
-are warnings/info, not errors. Use --strict to fail on warnings too.
+Malformed macro syntax is a hard error (it means the preset will not render
+the way the author wrote it). Unknown macros and unset reads are NOT fatal in
+the engine (unknown macros pass through as literal text; unset reads resolve
+to ""), so those are info/warning. Use --strict to fail on warnings too.
 
 Usage
 -----
@@ -153,14 +163,17 @@ def _oob_template_fields(preset: dict) -> list[tuple[str, str]]:
     return out
 
 
-def _declared_prompt_vars(preset: dict) -> set[str]:
-    """Names of creator-defined prompt variables seeded before assembly.
+def _declared_prompt_vars(preset: dict, *, include_disabled: bool = False) -> set[str]:
+    """Names of creator-defined prompt variables declared in the preset.
 
-    Only enabled blocks contribute (mirrors resolvePromptVariables, which
-    skips disabled blocks)."""
+    By default only enabled blocks contribute (mirrors resolvePromptVariables,
+    which skips disabled blocks — a var declared only in a disabled block is
+    NOT seeded at runtime). With ``include_disabled=True`` every declaration
+    is returned, for structural checks that just need to know whether a bare
+    ``{{name}}`` refers to a *valid* prompt variable vs. an unknown macro."""
     names: set[str] = set()
     for b in _blocks(preset):
-        if not b.get("enabled"):
+        if not b.get("enabled") and not include_disabled:
             continue
         for v in (b.get("variables") or []):
             nm = v.get("name")
@@ -259,27 +272,27 @@ def _walk_structure(nodes, text, field_path, block_index, block_name, enabled,
 
         if node.name == "" and not node.is_close:
             tail = _short(node.raw, 24)
-            add(WARNING, "empty-macro",
+            add(ERROR, "empty-macro",
                 f"`{{{{` with no macro name (`{tail}`) — likely a stray/unescaped "
                 f"`{{{{`. It swallows text up to the next `}}}}`; escape a literal "
                 f"brace as `\\{{` if intended", node.offset)
 
         if node.is_close:
             if nm == "else":
-                add(WARNING, "orphan-close",
+                add(ERROR, "orphan-close",
                     "`{{/else}}` is not valid — `else` takes no close tag", node.offset)
             else:
-                add(WARNING, "orphan-close",
+                add(ERROR, "orphan-close",
                     f"`{{{{/{node.name}}}}}` has no matching opening `{{{{{node.name}...}}}}`",
                     node.offset)
             continue
 
         if nm == "else" and not inside_if:
-            add(WARNING, "else-outside-if",
+            add(ERROR, "else-outside-if",
                 "`{{else}}` appears outside any `{{if}}...{{/if}}` block", node.offset)
 
         if nm == "else" and node.args:
-            add(WARNING, "else-if-unsupported",
+            add(ERROR, "else-if-unsupported",
                 "`{{else}}` takes no arguments — `{{else if::...}}` is NOT "
                 "supported. The condition is silently dropped and this behaves "
                 "as a plain `{{else}}`. Nest an `{{if}}` inside the else branch "
@@ -287,7 +300,7 @@ def _walk_structure(nodes, text, field_path, block_index, block_name, enabled,
 
         if nm == "if":
             # A non-scoped, non-close `if` means there was no matching {{/if}}.
-            add(WARNING, "unclosed-if",
+            add(ERROR, "unclosed-if",
                 "`{{if}}` has no matching `{{/if}}` — the conditional degrades "
                 "to an inline true/empty value and any following text is NOT "
                 "conditional", node.offset)
@@ -331,39 +344,56 @@ class _Unit:
     enabled: bool
 
 
-def _iter_var_events(nodes, conditional: bool) -> Iterator[tuple[str, str, Optional[str], bool, int]]:
-    """Yield (role, scope, var_name|None, conditional, offset) in document order.
+# Macros whose arguments / body form a conditional guard. A read inside one of
+# these is "emptiness-safe": an unset var just makes the guard evaluate false,
+# so it never needs a `conditional-set-before-read` note.
+_GUARD_MACROS = frozenset({
+    "if", "else", "and", "or", "not",
+    "eq", "ne", "gt", "gte", "lt", "lte",
+})
+
+
+def _iter_var_events(nodes, conditional: bool = False, guarded: bool = False
+                     ) -> Iterator[tuple[str, str, Optional[str], bool, bool, int]]:
+    """Yield (role, scope, var_name|None, conditional, guarded, offset).
 
     `var_name` is None when the name is computed at runtime (nested macros).
-    Reads inside an `{{if}}` body are flagged conditional; the if-condition
-    args are unconditional. Scoped setters emit their body events first, then
-    the write (matching evaluation order)."""
+    `conditional` marks reads/writes inside an `{{if}}` *body* (order/write
+    classification). `guarded` marks reads that sit inside a conditional guard
+    (`{{if}}` condition or body, or the args of `and`/`or`/`not`/comparisons),
+    where an unset value is benign. Scoped setters emit their body events
+    first, then the write (matching evaluation order)."""
     for node in nodes:
         if isinstance(node, Text):
             continue
-        op = VAR_OPS.get(node.name.lower())
+        nm = node.name.lower()
+        op = VAR_OPS.get(nm)
+        is_guard = nm in _GUARD_MACROS
         if isinstance(node, Scoped):
+            # Condition args of a guard macro belong to the guard expression;
+            # other args inherit the surrounding guarded-ness.
             for arg in node.args:
-                yield from _iter_var_events(arg, conditional)
-            body_cond = conditional or node.name.lower() == "if"
-            yield from _iter_var_events(node.body, body_cond)
+                yield from _iter_var_events(arg, conditional, guarded or is_guard)
+            body_cond = conditional or nm == "if"
+            body_guarded = guarded or nm == "if"
+            yield from _iter_var_events(node.body, body_cond, body_guarded)
             if op:
                 name = static_arg_text(node.args[0]) if node.args else None
                 yield (op.role, op.scope, (name.strip() if name else None) or None,
-                       conditional, node.offset)
+                       conditional, guarded, node.offset)
         else:  # Macro
             for arg in node.args:
-                yield from _iter_var_events(arg, conditional)
+                yield from _iter_var_events(arg, conditional, guarded or is_guard)
             if op:
                 name = static_arg_text(node.args[0]) if node.args else None
                 yield (op.role, op.scope, (name.strip() if name else None) or None,
-                       conditional, node.offset)
+                       conditional, guarded, node.offset)
 
 
 def _collect_writes(units: list[_Unit]) -> dict[str, set[str]]:
     writes = {"local": set(), "global": set(), "chat": set()}
     for u in units:
-        for role, scope, name, _cond, _off in _iter_var_events(parse_template(u.text), False):
+        for role, scope, name, _cond, _guarded, _off in _iter_var_events(parse_template(u.text)):
             if name and role in ("write", "rw"):
                 writes[scope].add(name)
     return writes
@@ -382,7 +412,7 @@ def _disabled_writes(preset: dict) -> dict[str, dict[str, list[str]]]:
         if "{{" not in content:
             continue
         bname = b.get("name", "?")
-        for role, scope, name, _c, _o in _iter_var_events(parse_template(content), False):
+        for role, scope, name, _c, _guarded, _o in _iter_var_events(parse_template(content)):
             if name and role in ("write", "rw"):
                 lst = out[scope].setdefault(name, [])
                 if bname not in lst:
@@ -398,13 +428,13 @@ def _analyze_flow(units: list[_Unit], declared: set[str],
     maybe = {"local": set(), "global": set(), "chat": set()}
 
     for u in units:
-        for role, scope, name, cond, off in _iter_var_events(parse_template(u.text), False):
+        for role, scope, name, cond, guarded, off in _iter_var_events(parse_template(u.text)):
             if name is None:
                 # dynamic write still establishes *something*, but we can't name it
                 continue
             if role == "read":
                 _classify_read(scope, name, written, maybe, writes_anywhere,
-                               declared, disabled_writes, u, off, diags)
+                               declared, disabled_writes, u, off, guarded, diags)
             elif role in ("write", "rw"):
                 if cond:
                     maybe[scope].add(name)
@@ -415,40 +445,50 @@ def _analyze_flow(units: list[_Unit], declared: set[str],
 
 
 def _classify_read(scope, name, written, maybe, writes_anywhere, declared,
-                   disabled_writes, unit: "_Unit", offset, diags) -> None:
+                   disabled_writes, unit: "_Unit", offset, guarded, diags) -> None:
     if name in written[scope]:
         return
     if scope == "local" and name in declared:
         return
     if name in maybe[scope]:
-        diags.append(_mk(
-            INFO, "conditional-set-before-read",
-            f"{_scope_sigil(scope)}{name} is read here but has only been set "
-            f"inside a conditional `{{{{if}}}}` branch so far — it may be unset",
-            unit.field_path, unit.block_index, unit.block_name, unit.enabled,
-            unit.text, offset))
+        if not guarded:
+            diags.append(_mk(
+                INFO, "conditional-set-before-read",
+                f"{_scope_sigil(scope)}{name} is read here but has only been set "
+                f"inside a conditional `{{{{if}}}}` branch so far — it may be unset",
+                unit.field_path, unit.block_index, unit.block_name, unit.enabled,
+                unit.text, offset))
         return
     if name in writes_anywhere[scope]:
-        diags.append(_mk(
-            INFO, "read-before-set",
-            f"{_scope_sigil(scope)}{name} is read before it is set — the "
-            f"assignment appears later in render order (or only in another block)",
-            unit.field_path, unit.block_index, unit.block_name, unit.enabled,
-            unit.text, offset))
+        if not guarded:
+            diags.append(_mk(
+                INFO, "read-before-set",
+                f"{_scope_sigil(scope)}{name} is read before it is set — the "
+                f"assignment appears later in render order (or only in another block)",
+                unit.field_path, unit.block_index, unit.block_name, unit.enabled,
+                unit.text, offset))
         return
-    diags.append(_never_set_diag(scope, name, declared, disabled_writes, unit, offset))
+    d = _never_set_diag(scope, name, declared, disabled_writes, unit, offset, guarded)
+    if d is not None:
+        diags.append(d)
 
 
-def _never_set_diag(scope, name, declared, disabled_writes, unit, offset) -> Diagnostic:
-    """Build the right diagnostic for a var read that has no enabled setter."""
+def _never_set_diag(scope, name, declared, disabled_writes, unit, offset,
+                    guarded: bool = False) -> Optional[Diagnostic]:
+    """Build the right diagnostic for a var read that has no enabled setter.
+
+    Returns None when the read is inside a conditional guard and the only
+    issue is that the value may be empty — a guard makes emptiness benign."""
     disabled_in = disabled_writes.get(scope, {}).get(name)
     if disabled_in:
+        if guarded:
+            return None
         where = ", ".join(repr(b) for b in disabled_in[:4])
         return _mk(
-            WARNING, "set-only-in-disabled",
-            f"{_scope_sigil(scope)}{name} is read here but is only set in "
-            f"DISABLED block(s) [{where}] — it resolves to empty until you "
-            f"enable a setter block",
+            INFO, "set-only-in-disabled",
+            f"{_scope_sigil(scope)}{name} is only set in DISABLED block(s) "
+            f"[{where}], so this read resolves to empty while they stay off — "
+            f"expected if that block is an intentional feature toggle",
             unit.field_path, unit.block_index, unit.block_name, unit.enabled,
             unit.text, offset)
     if scope == "local":
@@ -459,6 +499,8 @@ def _never_set_diag(scope, name, declared, disabled_writes, unit, offset) -> Dia
             f"an empty string (typo, or a missing setter?)",
             unit.field_path, unit.block_index, unit.block_name, unit.enabled,
             unit.text, offset)
+    if guarded:
+        return None
     return _mk(
         INFO, "never-set-external",
         f"{_scope_sigil(scope)}{name} ({scope}) is read but never set in this "
@@ -473,14 +515,57 @@ def _analyze_oob(oob_units: list[_Unit], declared: set[str],
                  diags: list[Diagnostic]) -> None:
     """Reads in nudge/prefill fields: only 'ever set?' matters (no ordering)."""
     for u in oob_units:
-        for role, scope, name, _cond, off in _iter_var_events(parse_template(u.text), False):
+        for role, scope, name, _cond, guarded, off in _iter_var_events(parse_template(u.text)):
             if name is None or role != "read":
                 continue
             if scope == "local" and name in declared:
                 continue
             if name in writes_anywhere[scope]:
                 continue
-            diags.append(_never_set_diag(scope, name, declared, disabled_writes, u, off))
+            d = _never_set_diag(scope, name, declared, disabled_writes, u, off, guarded)
+            if d is not None:
+                diags.append(d)
+
+
+def _analyze_disabled(disabled_units: list[_Unit], all_declared: set[str],
+                      all_writes: dict[str, set[str]],
+                      diags: list[Diagnostic]) -> None:
+    """Variable-read checks for DISABLED content blocks.
+
+    Disabled blocks never render, so ordering doesn't apply — we only check
+    that each read refers to something that exists *somewhere* in the preset:
+    a declared prompt variable (in any block) or a var written by any block
+    (enabled or disabled). A read that is nowhere set and not declared is a
+    typo even though the block is currently switched off."""
+    for u in disabled_units:
+        for role, scope, name, _cond, _guarded, off in _iter_var_events(parse_template(u.text)):
+            if name is None or role != "read":
+                continue
+            if scope == "local" and name in all_declared:
+                continue
+            if name in all_writes[scope]:
+                continue
+            diags.append(_disabled_never_set_diag(scope, name, u, off))
+
+
+def _disabled_never_set_diag(scope, name, unit, offset) -> Diagnostic:
+    """Never-set read that lives in a disabled block."""
+    if scope == "local":
+        return _mk(
+            WARNING, "never-set",
+            f"{_scope_sigil(scope)}{name} is read in a DISABLED block but is "
+            f"never set anywhere in this preset and is not a declared prompt "
+            f"variable — it would resolve to empty if this block were enabled "
+            f"(typo, or a missing setter?)",
+            unit.field_path, unit.block_index, unit.block_name, unit.enabled,
+            unit.text, offset)
+    return _mk(
+        INFO, "never-set-external",
+        f"{_scope_sigil(scope)}{name} ({scope}) is read in a DISABLED block but "
+        f"never set in this preset — fine if a previous turn or another preset "
+        f"sets it, otherwise it resolves to empty",
+        unit.field_path, unit.block_index, unit.block_name, unit.enabled,
+        unit.text, offset)
 
 
 def _scope_sigil(scope: str) -> str:
@@ -496,19 +581,22 @@ def validate(preset: dict, *, source: str = "") -> ValidationResult:
     result = ValidationResult(source=source)
     diags = result.diagnostics
     declared = _declared_prompt_vars(preset)
+    all_declared = _declared_prompt_vars(preset, include_disabled=True)
     blocks = _blocks(preset)
 
     # 1. Structural checks over EVERY block (enabled or not) + oob fields.
+    #    Uses the full declared set so a bare {{name}} referencing a prompt
+    #    variable declared in a disabled block isn't misread as an unknown macro.
     for i, b in enumerate(blocks):
         content = b.get("content") or ""
         name = b.get("name", f"block#{i}")
         enabled = bool(b.get("enabled"))
         fp = f"blocks[{i}] {name!r}.content"
-        _check_structure(content, fp, i, name, enabled, declared, diags)
+        _check_structure(content, fp, i, name, enabled, all_declared, diags)
 
     oob = _oob_template_fields(preset)
     for path, txt in oob:
-        _check_structure(txt, path, None, None, True, declared, diags)
+        _check_structure(txt, path, None, None, True, all_declared, diags)
 
     # 2. Variable-flow over ENABLED content blocks, in render order.
     enabled_units: list[_Unit] = []
@@ -526,7 +614,24 @@ def validate(preset: dict, *, source: str = "") -> ValidationResult:
     disabled_writes = _disabled_writes(preset)
     _analyze_flow(enabled_units, declared, disabled_writes, diags)
 
-    # 3. Out-of-band reads (nudges/prefills) against "ever set?".
+    # 3. Variable reads in DISABLED blocks — validate that they reference
+    #    variables that exist *somewhere* in the preset (declared prompt
+    #    variable or a var written in any block, enabled or disabled).
+    disabled_units: list[_Unit] = []
+    for i, b in enumerate(blocks):
+        if b.get("enabled"):
+            continue
+        content = b.get("content") or ""
+        if "{{" not in content:
+            continue
+        disabled_units.append(_Unit(
+            field_path=f"blocks[{i}] {b.get('name', '')!r}.content",
+            text=content, block_index=i,
+            block_name=b.get("name"), enabled=False))
+    all_writes = _collect_writes(enabled_units + disabled_units)
+    _analyze_disabled(disabled_units, all_declared, all_writes, diags)
+
+    # 4. Out-of-band reads (nudges/prefills) against "ever set?".
     writes_anywhere = _collect_writes(enabled_units)
     oob_units = [_Unit(p, t, None, None, True) for p, t in oob]
     _analyze_oob(oob_units, declared, writes_anywhere, disabled_writes, diags)
@@ -656,7 +761,7 @@ def variable_report(preset: dict) -> dict:
         if "{{" not in content:
             continue
         bname = b.get("name", f"#{orig_idx}")
-        for role, scope, name, _cond, _off in _iter_var_events(parse_template(content), False):
+        for role, scope, name, _cond, _guarded, _off in _iter_var_events(parse_template(content)):
             if not name:
                 continue
             e = entry(scope, name)

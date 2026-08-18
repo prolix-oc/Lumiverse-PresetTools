@@ -682,7 +682,10 @@ and variable-flow checks. It mirrors the real engine semantics:
 - the three variable scopes — local `{{.x}}` / `{{getvar::x}}`, global `{{$x}}`, chat `{{@x}}`;
 - creator-defined **prompt variables** (a block's `variables[]`) are pre-seeded before any block renders, so reading them is always safe;
 - block **render order** (`pre_history` → `in_history` → `post_history`), so "read before set" is order-aware;
-- **disabled blocks don't run**, so a var whose only setter is disabled is treated as unset.
+- **disabled blocks don't run**, so a var whose only setter is disabled is treated as unset;
+- **disabled blocks are still validated**: their macro names and variable reads are checked the same way as enabled blocks — a read that is never set anywhere in the preset (and isn't a declared prompt variable in any block) is flagged even though the block is switched off;
+- **malformed macro syntax is an error** (enabled or disabled): unterminated macros, empty macros, orphaned close tags, unclosed `{{if}}`, and `{{else}}` misuse;
+- **guarded reads are emptiness-safe**: reads inside an `{{if}}` condition/body (or `and`/`or`/`not`/`eq`/`ne`/`gt`/`gte`/`lt`/`lte` args) don't emit "may be unset" notes — a guard makes an empty value benign.
 
 ### CLI
 
