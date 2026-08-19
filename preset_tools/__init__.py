@@ -3,28 +3,27 @@ preset_tools — utilities for editing Lumiverse preset JSON files.
 
 Quick start:
     from preset_tools import (
-        audit, get_block_lines, insert_block, load,
-        modify_block, modify_block_lines, save,
+        audit, edit, get_block_lines, insert_block,
+        modify_block, modify_block_lines,
     )
 
-    preset = load('ThreadBare 1.0.json')
-    audit(preset)                           # print structural overview
-    print(get_block_lines(preset, 'Voice Shaping', 10, 14)['lines'])
-    modify_block_lines(
-        preset,
-        'Voice Shaping',
-        12,
-        new_content=replacement_text,
-        end_line=13,
-    )
-    modify_block(preset, 'Voice Shaping', new_content_string)  # whole block
-    insert_block(preset, new_block_dict, after='Anti-Echo')
-    save(preset, 'ThreadBare 1.0.json')
+    with edit('ThreadBare 1.0.json') as preset:
+        audit(preset)                           # print structural overview
+        print(get_block_lines(preset, 'Voice Shaping', 10, 14)['lines'])
+        modify_block_lines(
+            preset,
+            'Voice Shaping',
+            12,
+            new_content=replacement_text,
+            end_line=13,
+        )
+        modify_block(preset, 'Voice Shaping', new_content_string)  # whole block
+        insert_block(preset, new_block_dict, after='Anti-Echo')
 
 See README.md in this directory for full documentation.
 """
 
-from .io import load, save
+from .io import edit, load, save
 from .audit import audit, token_count, list_blocks
 from .blocks import (
     find_block,
@@ -126,7 +125,7 @@ def __getattr__(name):
 
 
 __all__ = [
-    'load', 'save',
+    'edit', 'load', 'save',
     'audit', 'token_count', 'list_blocks',
     'count_tokens', 'count_preset', 'count_blocks', 'token_audit', 'get_tokenizer',
     'find_block', 'find_block_index', 'new_block',

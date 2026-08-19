@@ -12,6 +12,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .io import save
+
 # Core fields under card["data"] that are most commonly edited.
 CORE_STRING_FIELDS = [
     "name",
@@ -126,8 +128,7 @@ def load_card(path: str) -> dict:
 
 def save_card(card: dict, path: str) -> None:
     """Save a character card JSON file with Unicode preservation."""
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(card, f, indent=2, ensure_ascii=False)
+    save(card, path)
 
 
 def token_estimate(text: Any) -> int:

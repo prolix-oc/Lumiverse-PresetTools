@@ -173,7 +173,7 @@ class MCPBlockLineSchemaTest(unittest.TestCase):
 
         self.assertEqual(
             list(params["properties"]),
-            ["path", "name", "start_line", "end_line", "replacement_content"],
+            ["path", "name", "start_line", "end_line", "replacement_content", "expected_revision"],
         )
         self.assertEqual(
             params["required"],

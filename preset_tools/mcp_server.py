@@ -19,11 +19,15 @@ Environment:
 from __future__ import annotations
 
 import contextlib
+import functools
+import hashlib
+import inspect
 import json
 import logging
 import os
 import re
 import traceback
+import typing
 from io import StringIO
 from pathlib import Path
 from typing import Annotated, Any, Literal, Optional
@@ -67,6 +71,7 @@ from .inspect import (
     show_block,
 )
 from .io import load, preset_blocks, save
+from .locking import preset_lock
 from .search import search_preset
 from .replace import (
     REPLACE_MODES,
@@ -111,7 +116,19 @@ from . import character as _char
 # Server setup
 # ---------------------------------------------------------------------------
 
-mcp = FastMCP("preset_tools_mcp")
+mcp = FastMCP(
+    "preset_tools_mcp",
+    instructions=(
+        "Preset writes are serialized per file and committed atomically. "
+        "Every successful write returns its revision. You may issue multiple "
+        "independent writes to the same preset in one turn: they are safely "
+        "serialized against the latest saved document. When an edit depends on "
+        "a previously-read version, pass expected_revision from that read; a "
+        "mismatch returns RevisionConflict and makes no change. Do not use a "
+        "stale revision for multiple dependent edits—make them in call order or "
+        "refresh after a conflict."
+    ),
+)
 
 WORKSPACE_ROOT = Path(os.environ.get("PRESET_TOOLS_WORKSPACE", os.getcwd())).resolve()
 
@@ -124,6 +141,18 @@ PathArg = Annotated[
             "the workspace root; absolute paths are accepted verbatim."
         ),
         min_length=1,
+    ),
+]
+
+RevisionArg = Annotated[
+    Optional[str],
+    Field(
+        description=(
+            "Optional SHA-256 revision returned by a prior write. When supplied, "
+            "the edit is rejected with RevisionConflict unless the file is still "
+            "at exactly that revision. Omit for an intent-based edit that should "
+            "be serialized against the latest saved preset."
+        ),
     ),
 ]
 
@@ -140,6 +169,93 @@ def _resolve_path(path: str) -> Path:
     if p.is_absolute():
         return p.resolve()
     return (WORKSPACE_ROOT / path).resolve()
+
+
+def _revision(path: Path) -> Optional[str]:
+    """Return the byte-level revision of a document, or ``None`` if missing."""
+    try:
+        digest = hashlib.sha256()
+        with path.open("rb") as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except FileNotFoundError:
+        return None
+
+
+def _with_write_revision(response: str, *, before: Optional[str], after: Optional[str]) -> str:
+    """Add transaction metadata without changing individual tool bodies."""
+    try:
+        payload = json.loads(response)
+    except (TypeError, json.JSONDecodeError):
+        return response
+    if payload.get("ok") and isinstance(payload.get("result"), dict):
+        result = payload["result"]
+        result.setdefault("base_revision", before)
+        result.setdefault("revision", after)
+        result.setdefault("write_serialized", True)
+        return json.dumps(payload, indent=2, ensure_ascii=False)
+    return response
+
+
+def _guard_preset_write(func):
+    """Wrap a complete MCP mutation in the canonical preset sidecar lock.
+
+    It is crucial that this decorator wraps the whole tool body, not merely
+    ``_save``: each body loads its document after the lock is acquired, so a
+    waiting writer always applies its intent to the most recently committed
+    document instead of saving a stale full-file snapshot.
+    """
+    signature = inspect.signature(func)
+    # Resolve postponed annotations before FastMCP builds its dynamic Pydantic
+    # argument model.  A wrapper otherwise leaves aliases such as ``PathArg``
+    # as unresolved forward references in that model.
+    hints = typing.get_type_hints(func, include_extras=True)
+    signature = signature.replace(
+        parameters=[
+            parameter.replace(annotation=hints.get(parameter.name, parameter.annotation))
+            for parameter in signature.parameters.values()
+        ],
+        return_annotation=hints.get("return", signature.return_annotation),
+    )
+    if "expected_revision" in signature.parameters:
+        raise RuntimeError(f"{func.__name__} already declares expected_revision")
+    parameters = list(signature.parameters.values())
+    parameters.append(inspect.Parameter(
+        "expected_revision",
+        kind=inspect.Parameter.KEYWORD_ONLY,
+        default=None,
+        annotation=RevisionArg,
+    ))
+
+    @functools.wraps(func)
+    async def guarded(*args, **kwargs):
+        expected_revision = kwargs.pop("expected_revision", None)
+        bound = signature.bind_partial(*args, **kwargs)
+        path = bound.arguments.get("path")
+        if path is None:
+            return _err("path is required")
+        resolved = _resolve_path(path)
+        with preset_lock(resolved):
+            before = _revision(resolved)
+            if expected_revision is not None and expected_revision != before:
+                return _err("RevisionConflict", {
+                    "file": path,
+                    "expected_revision": expected_revision,
+                    "actual_revision": before,
+                    "message": "the preset changed after it was read; refresh and retry",
+                })
+            response = await func(*args, **kwargs)
+            after = _revision(resolved)
+        return _with_write_revision(response, before=before, after=after)
+
+    # FastMCP inspects the callable's signature to build JSON Schema.  Keep
+    # functools.wraps for docs, but explicitly expose this added safety field.
+    guarded.__signature__ = signature.replace(parameters=parameters)
+    annotations = dict(getattr(func, "__annotations__", {}))
+    annotations["expected_revision"] = RevisionArg
+    guarded.__annotations__ = annotations
+    return guarded
 
 
 def _load(path: str) -> dict:
@@ -1193,6 +1309,7 @@ async def regex_check_pattern(
         "openWorldHint": False,
     },
 )
+@_guard_preset_write
 async def regex_create_script(
     path: PathArg,
     name: Annotated[str, Field(description="Display name for the regex script", min_length=1)],
@@ -1389,6 +1506,7 @@ async def regex_create_script(
         "openWorldHint": False,
     },
 )
+@_guard_preset_write
 async def regex_update_script(
     path: PathArg,
     identifier: Annotated[
@@ -1526,6 +1644,7 @@ async def regex_update_script(
         "openWorldHint": False,
     },
 )
+@_guard_preset_write
 async def regex_delete_script(
     path: PathArg,
     identifier: Annotated[
@@ -1563,6 +1682,7 @@ async def regex_delete_script(
         "openWorldHint": False,
     },
 )
+@_guard_preset_write
 async def preset_modify_block(
     path: PathArg,
     name: Annotated[str, Field(description="Exact name of the block to modify", min_length=1)],
@@ -1592,6 +1712,7 @@ async def preset_modify_block(
         "openWorldHint": False,
     },
 )
+@_guard_preset_write
 async def preset_edit_block_lines(
     path: PathArg,
     name: Annotated[str, Field(description="Exact name of the block to modify", min_length=1)],
@@ -1632,6 +1753,7 @@ async def preset_edit_block_lines(
         "openWorldHint": False,
     },
 )
+@_guard_preset_write
 async def preset_edit_block_line_range(
     path: PathArg,
     name: Annotated[str, Field(description="Exact name of the block to modify", min_length=1)],
@@ -1788,6 +1910,7 @@ async def preset_check_replace(
         "openWorldHint": False,
     },
 )
+@_guard_preset_write
 async def preset_replace_text(
     path: PathArg,
     pattern: Annotated[
@@ -1870,6 +1993,7 @@ async def preset_replace_text(
         "openWorldHint": False,
     },
 )
+@_guard_preset_write
 async def preset_insert_prompt_variable(
     path: PathArg,
     block_name: Annotated[str, Field(description="Exact name of the block that will own the variable", min_length=1)],
@@ -2103,6 +2227,7 @@ _UPDATE_ALLOWED_FIELDS = {
         "openWorldHint": False,
     },
 )
+@_guard_preset_write
 async def preset_update_prompt_variable(
     path: PathArg,
     block_name: Annotated[str, Field(description="Exact name of the block that owns the variable", min_length=1)],
@@ -2279,6 +2404,7 @@ async def preset_update_prompt_variable(
         "openWorldHint": False,
     },
 )
+@_guard_preset_write
 async def preset_remove_prompt_variable(
     path: PathArg,
     block_name: Annotated[str, Field(description="Exact name of the block that owns the variable", min_length=1)],
@@ -2341,6 +2467,7 @@ async def preset_get_stored_prompt_variables(path: PathArg) -> str:
         "openWorldHint": False,
     },
 )
+@_guard_preset_write
 async def preset_set_stored_prompt_variable(
     path: PathArg,
     block_name: Annotated[str, Field(description="Exact name of the block that owns the variable", min_length=1)],
@@ -2380,6 +2507,7 @@ async def preset_set_stored_prompt_variable(
         "openWorldHint": False,
     },
 )
+@_guard_preset_write
 async def preset_remove_stored_prompt_variable(
     path: PathArg,
     block_name: Annotated[str, Field(description="Exact name of the block that owns the variable", min_length=1)],
@@ -2405,6 +2533,7 @@ async def preset_remove_stored_prompt_variable(
         "openWorldHint": False,
     },
 )
+@_guard_preset_write
 async def preset_insert_block(
     path: PathArg,
     name: Annotated[str, Field(description="Name for the new block", min_length=1)],
@@ -2457,6 +2586,7 @@ async def preset_insert_block(
         "openWorldHint": False,
     },
 )
+@_guard_preset_write
 async def preset_delete_block(
     path: PathArg,
     name: Annotated[str, Field(description="Exact name of the block to delete", min_length=1)],
@@ -2482,6 +2612,7 @@ async def preset_delete_block(
         "openWorldHint": False,
     },
 )
+@_guard_preset_write
 async def preset_move_block(
     path: PathArg,
     name: Annotated[str, Field(description="Exact name of the block to move", min_length=1)],
@@ -2510,6 +2641,7 @@ async def preset_move_block(
         "openWorldHint": False,
     },
 )
+@_guard_preset_write
 async def preset_clone_block(
     path: PathArg,
     name: Annotated[str, Field(description="Exact name of the block to clone", min_length=1)],
@@ -2548,6 +2680,7 @@ async def preset_clone_block(
         "openWorldHint": False,
     },
 )
+@_guard_preset_write
 async def preset_rename_block(
     path: PathArg,
     old_name: Annotated[str, Field(description="Current block name", min_length=1)],
@@ -2573,6 +2706,7 @@ async def preset_rename_block(
         "openWorldHint": False,
     },
 )
+@_guard_preset_write
 async def preset_toggle_block(
     path: PathArg,
     name: Annotated[str, Field(description="Exact name of the block to toggle", min_length=1)],
@@ -2598,6 +2732,7 @@ async def preset_toggle_block(
         "openWorldHint": False,
     },
 )
+@_guard_preset_write
 async def preset_set_seal(
     path: PathArg,
     names: Annotated[list[str], Field(description="Exact names of blocks to seal or unseal", min_length=1)],
@@ -2639,6 +2774,7 @@ async def preset_set_seal(
         "openWorldHint": False,
     },
 )
+@_guard_preset_write
 async def preset_mass_seal(
     path: PathArg,
     sealed: Annotated[bool, Field(description="True to seal, False to unseal")] = True,
@@ -2771,6 +2907,7 @@ async def preset_dump_enabled(
         "openWorldHint": False,
     },
 )
+@_guard_preset_write
 async def preset_backup(path: PathArg) -> str:
     """Create a timestamped backup copy of a file and return its path.
 
@@ -2817,6 +2954,7 @@ async def preset_list_backups(path: PathArg) -> str:
         "openWorldHint": False,
     },
 )
+@_guard_preset_write
 async def preset_restore_backup(
     path: PathArg,
     backup: Annotated[
@@ -3031,6 +3169,7 @@ async def character_card_get_field(
         "openWorldHint": False,
     },
 )
+@_guard_preset_write
 async def character_card_set_field(
     path: PathArg,
     field: Annotated[str, Field(description="Field name, supports dot notation (e.g. 'extensions.talkativeness')", min_length=1)],
@@ -3088,6 +3227,7 @@ async def character_card_get_summary(
         "openWorldHint": False,
     },
 )
+@_guard_preset_write
 async def character_card_set_fields(
     path: PathArg,
     updates: Annotated[

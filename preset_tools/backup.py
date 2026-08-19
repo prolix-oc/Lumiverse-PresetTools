@@ -10,6 +10,7 @@ Automatic backups before writes are controlled by ``PRESET_TOOLS_AUTO_BACKUP``
 
 import os
 import shutil
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -94,5 +95,29 @@ def restore_backup(path: str, backup: str) -> str:
         raise FileNotFoundError(f"backup '{backup}' not found")
 
     backup_file(path)  # protect the current file before overwriting
-    shutil.copy2(str(src), str(path))
+    target = Path(path)
+    fd, temporary_path = tempfile.mkstemp(
+        prefix=f".{target.name}.", suffix=".restore.tmp", dir=str(target.parent),
+    )
+    try:
+        with os.fdopen(fd, "wb") as temporary, src.open("rb") as source:
+            shutil.copyfileobj(source, temporary)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+        shutil.copystat(src, temporary_path)
+        os.replace(temporary_path, target)
+        try:
+            directory_fd = os.open(str(target.parent), os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        except OSError:
+            pass
+    except Exception:
+        try:
+            os.unlink(temporary_path)
+        except FileNotFoundError:
+            pass
+        raise
     return str(path)

@@ -8,7 +8,14 @@ visual diffing.
 """
 
 import json
-from typing import Any
+import os
+import stat
+import tempfile
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Any, Iterator
+
+from .locking import preset_lock
 
 
 def load(path: str) -> dict:
@@ -36,8 +43,59 @@ def save(preset: dict, path: str) -> None:
 
     Always uses indent=2 to match the Lumiverse export format.
     """
-    with open(path, 'w', encoding='utf-8') as f:
-        json.dump(preset, f, indent=2, ensure_ascii=False)
+    # Never write directly over the live document.  A reader should observe
+    # either the previous complete JSON document or the next complete one,
+    # never a partially-truncated file.  The caller is responsible for the
+    # corresponding read-modify-write lock.
+    target = Path(path)
+    previous_mode = None
+    try:
+        previous_mode = stat.S_IMODE(target.stat().st_mode)
+    except FileNotFoundError:
+        pass
+
+    fd, temporary_path = tempfile.mkstemp(
+        prefix=f".{target.name}.", suffix=".tmp", dir=str(target.parent or Path(".")), text=True,
+    )
+    try:
+        if previous_mode is not None:
+            os.chmod(temporary_path, previous_mode)
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            json.dump(preset, f, indent=2, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temporary_path, target)
+
+        # Persist the directory entry as well as file contents on platforms
+        # where directory fsync is supported.
+        try:
+            directory_fd = os.open(str(target.parent or Path(".")), os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        except OSError:
+            pass
+    except Exception:
+        try:
+            os.unlink(temporary_path)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+@contextmanager
+def edit(path: str) -> Iterator[dict]:
+    """Load, modify, and atomically save a preset under its sidecar lock.
+
+    Use this for library-level read-modify-write work. Calling ``load`` and
+    ``save`` independently still provides an atomic final save, but cannot
+    protect the interval between them from another writer.
+    """
+    with preset_lock(path):
+        preset = load(path)
+        yield preset
+        save(preset, path)
 
 
 def preset_blocks(preset: dict) -> list[dict]:

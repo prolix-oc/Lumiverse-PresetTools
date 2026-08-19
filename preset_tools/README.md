@@ -24,41 +24,37 @@ This module exists because editing Lumiverse preset JSON files by hand (or via t
 ```python
 from preset_tools import (
     audit,
+    edit,
     get_block_lines,
     insert_block,
-    load,
     modify_block_lines,
     new_block,
-    save,
 )
 
-preset = load('ThreadBare 1.0.json')
-audit(preset)                              # visual overview
+with edit('ThreadBare 1.0.json') as preset:
+    audit(preset)                              # visual overview
 
-# Read a numbered slice from a long block
-snippet = get_block_lines(preset, 'Voice Shaping', start_line=8, end_line=12)
-for row in snippet['lines']:
-    print(row['line'], row['text'])
+    # Read a numbered slice from a long block
+    snippet = get_block_lines(preset, 'Voice Shaping', start_line=8, end_line=12)
+    for row in snippet['lines']:
+        print(row['line'], row['text'])
 
-# Replace just those lines
-modify_block_lines(
-    preset,
-    'Voice Shaping',
-    start_line=10,
-    end_line=11,
-    new_content='Rewritten line 10.\nRewritten line 11.',
-)
+    # Replace just those lines
+    modify_block_lines(
+        preset,
+        'Voice Shaping',
+        start_line=10,
+        end_line=11,
+        new_content='Rewritten line 10.\nRewritten line 11.',
+    )
 
-# Insert a new block after another
-nb = new_block(
-    name='My New Block',
-    content='<my_tag>\nInstructions here.\n</my_tag>',
-    enabled=True,
-)
-insert_block(preset, nb, after='Anti-Echo')
-
-# Save (CRITICAL — preserves Unicode)
-save(preset, 'ThreadBare 1.0.json')
+    # Insert a new block after another
+    nb = new_block(
+        name='My New Block',
+        content='<my_tag>\nInstructions here.\n</my_tag>',
+        enabled=True,
+    )
+    insert_block(preset, nb, after='Anti-Echo')
 ```
 
 ## MCP server
@@ -244,6 +240,21 @@ can reference presets outside the workspace directory.
 All tools accept file paths relative to `PRESET_TOOLS_WORKSPACE` (or the
 server's working directory) as well as absolute paths. Write tools modify the
 JSON and save it with Unicode preserved.
+
+### Concurrent editing
+
+Every MCP write takes an exclusive sidecar lock for that preset, reloads the
+latest saved document while holding it, and commits with an atomic file
+replacement. Independent write calls may therefore be issued in the same
+model turn without losing a whole-file update; they are serialized per file.
+Successful writes return `base_revision`, `revision`, and
+`write_serialized: true`.
+
+When a write relies on a previously observed version, pass that response's
+`revision` as `expected_revision`. A changed file returns `RevisionConflict`
+without writing, so refresh and retry rather than applying stale intent.
+Advisory locks cover all preset-tools processes; another editor must use the
+same `<preset>.lock` convention to participate in this guarantee.
 
 For exact range work, prefer the range-specific pair:
 

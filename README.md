@@ -89,12 +89,11 @@ pip install preset-tools
 ## Using as a Python library
 
 ```python
-from preset_tools import load, save, get_block_lines, modify_block_lines
+from preset_tools import edit, get_block_lines, modify_block_lines
 
-preset = load("My Preset.json")
-print(get_block_lines(preset, "Voice Shaping", 10, 14)["lines"])
-modify_block_lines(preset, "Voice Shaping", 12, end_line=13, new_content="...")
-save(preset, "My Preset.json")   # writes UTF-8 with literal Unicode preserved
+with edit("My Preset.json") as preset:
+    print(get_block_lines(preset, "Voice Shaping", 10, 14)["lines"])
+    modify_block_lines(preset, "Voice Shaping", 12, end_line=13, new_content="...")
 ```
 
 ## Configuration
