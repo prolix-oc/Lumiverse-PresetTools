@@ -215,6 +215,8 @@ can reference presets outside the workspace directory.
 | `preset_diff` | Content-level diff of two presets (unified diff per block) |
 | `preset_edit_block_lines` | Edit a line, or a range if you explicitly provide `end_line` |
 | `preset_edit_block_line_range` | Preferred way to replace an exact numbered line range and save |
+| `preset_check_replace` | Pre-flight a search & replace: compile, group refs, over-broad capture detection, live per-block preview |
+| `preset_replace_text` | Regex or literal search & replace across block contents/titles and category contents/titles, validated before saving |
 | `preset_modify_block` | Replace a block's content and save |
 | `preset_insert_block` | Add a new block and save |
 | `preset_move_block` | Move a block to a new position and save |
@@ -427,6 +429,7 @@ If you prefer not to pay the extraction cost on every server start, you can gene
 - **`toggle_block(preset, name, enabled: bool) -> dict`** — Enable/disable.
 - **`set_stored_prompt_variable(preset, block_name, var_name, value, *, remove=False) -> dict`** — Set/remove a stored (end-user) prompt-variable value, keyed by block id.
 - **`stored_variable_report(preset) -> list[dict]`** — Stored values resolved to block names.
+- **`rewrite_variable_references(preset, old_name, new_name) -> dict`** — Rewrite every `{{var::old}}`-family macro reference in all block contents (including `::arg` sub-syntax) and migrate the stored prompt-variable value key. Returns `{"content_references": n, "stored_values": n}`.
 
 ### Inspect (`preset_tools.inspect`)
 
@@ -447,6 +450,13 @@ If you prefer not to pay the extraction cost on every server start, you can gene
 - **`search_preset(preset, query, *, case_sensitive=False, regex=False, surfaces=None, category=None, enabled_only=False, limit=None) -> dict`** — Search blocks, prompt variables, and categories with snippets and category membership.
 - **`list_categories(preset) -> list[str]`** — Category header names in order.
 - **`block_categories(preset) -> list[dict]`** — Per-block category membership.
+
+### Replace (`preset_tools.replace`)
+
+- **`replace_in_preset(preset, pattern, replacement, *, mode='regex', surfaces=None, category=None, enabled_only=False, case_sensitive=False, multiline=False, dot_all=False, allow_broad=False, dry_run=False, repair=True, preview=3) -> dict`** — Validated find/replace across block contents/titles and category contents/titles. Raises `ReplaceRejected` (`.findings`) instead of mutating when the gate rejects; returns a per-field change report with before/after previews.
+- **`check_replace(pattern, replacement, *, mode='regex', case_sensitive=False, multiline=False, dot_all=False, samples=None, allow_broad=False, repair=True) -> dict`** — Pre-flight the same validation gate (compile, empty-match, group refs, over-broad capture against `samples`) without touching a preset.
+- **`translate_replacement(replacement) -> str`** — Translate JS `$N` / `$<name>` / `${name}` / `$$` replacement references to Python `\g<...>` form.
+- **`REPLACE_SURFACES` / `REPLACE_MODES`** — The valid surfaces and modes.
 
 ### Backup (`preset_tools.backup`)
 
@@ -602,13 +612,13 @@ editing.
 `preset_update_prompt_variable` patches one variable atomically: pass an
 `updates` object using the stored field names (`label`, `description`,
 `type`, `defaultValue`, `min`, `max`, `step`, `rows`, `options`,
-`separator`, `name`; the tool-style aliases `var_type` / `default_value` /
-`min_value` / `max_value` also work). The definition is rebuilt with
-Lumiverse's coercion rules — changing `type` re-coerces the default — the
 stable `id` is preserved, unknown field names are rejected (typos like
-`defualt_value` fail loudly), and renaming a variable warns when the content
-still references the old macro name. Validation failures leave the file
-untouched.
+`defualt_value` fail loudly). Renaming a variable (an `updates.name` change)
+also rewrites every `{{var::old}}` / `{{getvar::old}}`-family macro reference
+— including sub-syntax like `{{var::old::ison::keys}}` — in **all** block
+contents and migrates the stored prompt-variable value key, so a rename cannot
+silently break the preset (pass `rewrite_references=false` to keep the old
+warning-only behavior). Validation failures leave the file untouched.
 
 ### Examples
 
@@ -671,8 +681,79 @@ preset_insert_prompt_variable(
 ```
 
 Use `insert_macro=False` if you only want to register the variable definition without changing the block content. Use `macro_template` to insert something more elaborate than the default `{{var::{name}}}` — for example, `macro_template='{{if {{var::{name}}} == 1}}...{{/if}}'`.
-
 To remove a variable definition later, use `preset_remove_prompt_variable(path, block_name, var_name)`.
+
+## Search & replace across a preset
+
+`preset_replace_text` runs a validated find/replace over the preset's text
+surfaces — block contents, block titles, category contents, and category
+titles — in one shot, instead of many line-range edits:
+
+```python
+preset_replace_text(
+    path='ThreadBare 1.0.json',
+    pattern='slop', replacement='prose', mode='literal',   # plain-string mode
+)
+
+preset_replace_text(
+    path='ThreadBare 1.0.json',
+    pattern=r'\b(\w+) slop\b', replacement=r'$1 prose',    # regex mode
+    mode='regex', surfaces=['block_content', 'category_content'],
+)
+```
+
+Two modes:
+
+- **`literal`** — plain find/replace. No regex interpretation at all; the
+  pattern and replacement are both verbatim text.
+- **`regex`** — Python `re` substitution. JavaScript-flavored input is
+  accepted and translated: `/.../flags` literals are stripped (with `i`/`m`/`s`
+  applied), `(?<name>` named groups become `(?P<name>`, and `$1` / `$<name>` /
+  `${name}` replacement references work alongside Python's `\1` / `\g<name>`.
+
+Optional filters: `surfaces` (default all four), `category` (one section),
+`enabled_only`, `case_sensitive` (default insensitive), `multiline`, and
+`dot_all`.
+
+### The validation gate
+
+Every replacement — dry run or not — passes a gate before anything is written.
+Rejections raise an error, the file is untouched, and the findings say exactly
+what went wrong:
+
+| Finding | What it catches |
+|---|---|
+| `syntax_error` | Uncompilable pattern, with position, caret excerpt, and a fix hint (`a(` → "an opening '(' is never closed") |
+| `empty_match_possible` | Patterns that can match an empty string (insert-at-every-position accidents) |
+| `zero_width_match` | Matches that consume nothing against the real content |
+| `invalid_group_reference` | `$2` when the pattern defines only one group |
+| `over_broad_match` | A single match swallowing ≥60% of a non-trivial field — reported with the block, the ratio, and what it captured, so the LLM can see what the pattern *actually* grabbed |
+| `match_limit_exceeded` | >5000 matches across the preset |
+| `explosive_growth` | Replacement expanding matches beyond a flat budget / half the matched text (catches `$1$1` duplication) |
+| `empty_title_result` / `duplicate_title_result` | A title rewrite that would erase or collide block names |
+| `multiline_hint` / `dotall_hint` | Zero matches, but `^`/`$` or `.` would match with `multiline`/`dot_all` enabled |
+| `nested_quantifier` | `(a+)+`-style patterns that risk catastrophic backtracking |
+
+`allow_broad_matches=true` overrides only the over-broad rejection (after
+reviewing the preview). Use `preset_check_replace` (read-only, works with or
+without a file) or `dry_run=true` to preview: both return per-block
+match counts, before/after excerpts, and the same diagnostics. For
+whole-field rewrites, prefer `preset_modify_block`.
+
+### Python library
+
+```python
+from preset_tools import load, save, replace_in_preset, check_replace
+
+preset = load('ThreadBare 1.0.json')
+gate = check_replace(r'\b(\w+) slop\b', r'$1 prose')   # returns findings
+report = replace_in_preset(preset, 'slop', 'prose', mode='literal')
+if report['changed']:
+    save(preset, 'ThreadBare 1.0.json')
+```
+
+`replace_in_preset` raises `ReplaceRejected` (with `.findings`) instead of
+mutating when the gate rejects.
 
 ## Validating presets — macro syntax & variable-flow checker
 

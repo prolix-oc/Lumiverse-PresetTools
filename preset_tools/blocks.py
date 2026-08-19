@@ -699,6 +699,44 @@ def remove_prompt_variable(preset: dict, block_name: str, var_name: str) -> dict
     raise ValueError(f"Variable '{var_name}' not found in block '{block_name}'")
 
 
+_VAR_REF_MACROS = (
+    "var", "getvar",
+    "varDefault", "promptVar", "presetVar",
+    "promptVarDefault", "presetVarDefault",
+)
+
+
+def rewrite_variable_references(preset: dict, old_name: str, new_name: str) -> dict:
+    """Rewrite every macro reference to a renamed prompt variable.
+
+    Updates ``{{var::old}}``, ``{{getvar::old}}``, and the other
+    ``{{varDefault::old}}``-family aliases in every block's content — including
+    the sub-syntax forms ``{{var::old::ison::...}}`` — and migrates the stored
+    prompt-variable value key (``metadata.promptVariables[blockId][old]``).
+
+    Returns ``{"content_references": n, "stored_values": n}``.
+    """
+    macros = "|".join(_VAR_REF_MACROS)
+    ref_re = re.compile(r"(\{\{(?:" + macros + r")::)" + re.escape(old_name) + r"(?=\}\}|::)")
+    content_refs = 0
+    for block in preset_blocks(preset):
+        content = block.get("content")
+        if not isinstance(content, str) or not content:
+            continue
+        rewritten, n = ref_re.subn(r"\g<1>" + new_name, content)
+        if n:
+            block["content"] = rewritten
+            content_refs += n
+
+    stored = 0
+    container = _stored_container(preset)
+    for block_id, values in list(container.items()):
+        if isinstance(values, dict) and old_name in values:
+            values[new_name] = values.pop(old_name)
+            stored += 1
+    return {"content_references": content_refs, "stored_values": stored}
+
+
 # ---------------------------------------------------------------------------
 # Stored prompt-variable values (the end-user's saved settings)
 # ---------------------------------------------------------------------------

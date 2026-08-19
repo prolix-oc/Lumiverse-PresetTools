@@ -37,7 +37,7 @@ This package is stout about that by default and transparent about it:
 
 | Group | Tools |
 |---|---|
-| Preset blocks | `preset_audit`, `preset_list_blocks`, `preset_find_block`, `preset_show_block`, `preset_get_section`, `preset_get_block_lines`, `preset_get_block_line_range`, `preset_search`, `preset_insert_block`, `preset_move_block`, `preset_clone_block`, `preset_modify_block`, `preset_edit_block_lines`, `preset_edit_block_line_range`, `preset_delete_block`, `preset_rename_block`, `preset_toggle_block` |
+| Preset blocks | `preset_audit`, `preset_list_blocks`, `preset_find_block`, `preset_show_block`, `preset_get_section`, `preset_get_block_lines`, `preset_get_block_line_range`, `preset_search`, `preset_insert_block`, `preset_move_block`, `preset_clone_block`, `preset_modify_block`, `preset_edit_block_lines`, `preset_edit_block_line_range`, `preset_replace_text`, `preset_check_replace`, `preset_delete_block`, `preset_rename_block`, `preset_toggle_block` |
 | Prompt variables | `preset_insert_prompt_variable`, `preset_list_prompt_variables`, `preset_update_prompt_variable`, `preset_remove_prompt_variable`, `preset_variable_report`, `preset_get_stored_prompt_variables`, `preset_set_stored_prompt_variable`, `preset_remove_stored_prompt_variable` |
 | Regex scripts | `regex_list_scripts`, `regex_get_script`, `regex_create_script`, `regex_update_script`, `regex_delete_script`, `regex_validate`, `regex_check_pattern` |
 | Validation & compare | `preset_validate`, `preset_compare`, `preset_diff`, `preset_check_seals`, `preset_set_seal`, `preset_mass_seal` |

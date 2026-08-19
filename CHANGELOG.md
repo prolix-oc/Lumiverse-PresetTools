@@ -3,6 +3,23 @@
 
 ## Unreleased
 
+- New search & replace: `preset_replace_text` MCP tool +
+  `preset_tools.replace` library module. Regex or plain-string (literal) mode,
+  applied to block contents, block titles, category contents, and category
+  titles, with `category` / `enabled_only` / `case_sensitive` / `multiline` /
+  `dot_all` filters and a `dry_run` preview. Every run passes a validation
+  gate first — syntax errors (position + hint), empty-string matches,
+  over-broad captures (a single match swallowing ≥60% of a field, reported
+  with what it grabbed), invalid group references, duplicate/empty title
+  results, match limits, and `$1$1`-style explosive growth — and the file is
+  left untouched on rejection. `preset_check_replace` is the read-only
+  pre-flight twin (works with or without a preset file).
+- Prompt variables: renaming via `preset_update_prompt_variable` now rewrites
+  every `{{var::old}}`/`{{getvar::old}}`-family macro reference in all block
+  contents (including `{{var::old::ison::keys}}` sub-syntax) and migrates the
+  stored prompt-variable value key, so a rename can no longer silently break
+  the preset; `rewrite_references=false` restores the old warning-only
+  behavior.
 - New `preset_render_block` MCP tool + `preset_tools.render.render_block`:
   render a single block in isolation (enabled or disabled) with seeded
   engine-local variables (`variables={"x": 1}` seeds what `{{setvar}}` writes

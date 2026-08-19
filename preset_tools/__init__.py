@@ -50,6 +50,14 @@ from .inspect import (
     dump_enabled_to_file,
 )
 from .search import search_preset, list_categories, block_categories
+from .replace import (
+    REPLACE_MODES,
+    REPLACE_SURFACES,
+    ReplaceRejected,
+    check_replace,
+    replace_in_preset,
+    translate_replacement,
+)
 from .blocks import rename_block, toggle_block
 from .compare import diff_block_counts, side_by_side, diff_presets
 from .backup import backup_file, list_backups, restore_backup, auto_backup_enabled
@@ -144,4 +152,6 @@ __all__ = [
     'regex_scripts', 'find_regex_script', 'insert_regex_script',
     'update_regex_script', 'delete_regex_script', 'script_summary',
     'validate_regex_script', 'validate_regex_document',
+    'REPLACE_MODES', 'REPLACE_SURFACES', 'ReplaceRejected',
+    'check_replace', 'replace_in_preset', 'translate_replacement',
 ]

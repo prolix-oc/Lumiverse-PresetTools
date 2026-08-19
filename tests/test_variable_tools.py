@@ -320,7 +320,47 @@ class MCPVariableToolsTest(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(failed["ok"])
             self.assertEqual(path.read_text(encoding="utf-8"), before)
 
-    async def test_rename_warns_about_stale_macro_references(self) -> None:
+    async def test_rename_rewrites_macro_references(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmpdir:
+            path = Path(tmpdir) / "p.json"
+            path.write_text(
+                json.dumps({
+                    "blocks": [
+                        {"name": "U", "content": "{{var::old}} and {{getvar::old}} and {{var::old::ison::k}}"},
+                        {"name": "V", "content": "{{var::old}} again"},
+                    ],
+                    "metadata": {"promptVariables": {"u-id": {"old": 1, "other": 2}}},
+                }),
+                encoding="utf-8",
+            )
+            rel = path.relative_to(Path.cwd()).as_posix()
+
+            created = json.loads(await preset_insert_prompt_variable(
+                path=rel, block_name="U", name="old", label="Old", var_type="switch",
+                insert_macro=False,
+            ))
+            self.assertTrue(created["ok"])
+
+            result = json.loads(await preset_update_prompt_variable(
+                path=rel, block_name="U", var_name="old", updates={"name": "new"},
+            ))
+            self.assertTrue(result["ok"])
+            codes = [d["code"] for d in result["result"]["diagnostics"]]
+            self.assertIn("rewrote_macro_references", codes)
+            self.assertNotIn("stale_macro_reference", codes)
+
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            contents = [b["content"] for b in saved["blocks"]]
+            self.assertEqual(contents, [
+                "{{var::new}} and {{getvar::new}} and {{var::new::ison::k}}",
+                "{{var::new}} again",
+            ])
+            self.assertEqual(
+                saved["metadata"]["promptVariables"]["u-id"],
+                {"new": 1, "other": 2},
+            )
+
+    async def test_rename_without_rewrite_keeps_warning(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmpdir:
             path = Path(tmpdir) / "p.json"
             path.write_text(
@@ -337,10 +377,13 @@ class MCPVariableToolsTest(unittest.IsolatedAsyncioTestCase):
 
             result = json.loads(await preset_update_prompt_variable(
                 path=rel, block_name="U", var_name="old", updates={"name": "new"},
+                rewrite_references=False,
             ))
             self.assertTrue(result["ok"])
             codes = [d["code"] for d in result["result"]["diagnostics"]]
             self.assertIn("stale_macro_reference", codes)
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(saved["blocks"][0]["content"], "{{var::old}} here")
 
     async def test_list_tool(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmpdir:

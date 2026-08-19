@@ -56,6 +56,7 @@ from .blocks import (
     stored_variable_report,
     toggle_block,
     update_prompt_variable,
+    rewrite_variable_references,
 )
 from .compare import diff_presets
 from .inspect import (
@@ -67,6 +68,13 @@ from .inspect import (
 )
 from .io import load, preset_blocks, save
 from .search import search_preset
+from .replace import (
+    REPLACE_MODES,
+    REPLACE_SURFACES,
+    ReplaceRejected,
+    check_replace,
+    replace_in_preset,
+)
 from .render import RenderEnv, render_block, render_preset
 from .lumiverse import render_preset_live
 from .regex_lint import (
@@ -1654,6 +1662,204 @@ async def preset_edit_block_line_range(
         return _err(type(exc).__name__, traceback.format_exc())
 
 
+_SURFACE_ARG = Annotated[
+    Optional[list[Literal["block_content", "block_title", "category_content", "category_title"]]],
+    Field(
+        description=(
+            "Text surfaces to replace across: block_content (non-category block contents), "
+            "block_title (non-category block names), category_content (category block contents), "
+            "category_title (category block names). Defaults to all four"
+        ),
+    ),
+]
+
+
+@mcp.tool(
+    name="preset_check_replace",
+    annotations={
+        "title": "Pre-flight check a search & replace",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+async def preset_check_replace(
+    pattern: Annotated[
+        str,
+        Field(
+            description=(
+                "Find pattern. regex mode: a regular expression (JS-style /.../flags literals and "
+                "$1/$<name> replacement refs are accepted and translated to Python re). "
+                "literal mode: matched verbatim as plain text"
+            ),
+            min_length=1,
+        ),
+    ],
+    replacement: Annotated[str, Field(description="Replacement text", min_length=1)],
+    mode: Annotated[Literal["regex", "literal"], Field(description="Matching mode; literal skips all regex interpretation")] = "regex",
+    path: Annotated[
+        Optional[str],
+        Field(
+            description=(
+                "Optional preset file to preview against. When given, the pattern is run on every "
+                "matching surface (dry-run, nothing written) and over-broad matches are flagged "
+                "per block"
+            ),
+        ),
+    ] = None,
+    surfaces: _SURFACE_ARG = None,
+    category: Annotated[Optional[str], Field(description="Restrict to one category section (by category block name)")] = None,
+    enabled_only: Annotated[bool, Field(description="Only match inside enabled blocks")] = False,
+    case_sensitive: Annotated[bool, Field(description="Match case-sensitively (default: insensitive)")] = False,
+    multiline: Annotated[bool, Field(description="Regex mode: ^ and $ anchor per line instead of per field")] = False,
+    dot_all: Annotated[bool, Field(description="Regex mode: . also matches newlines (JS /s flag)")] = False,
+    allow_broad_matches: Annotated[
+        bool,
+        Field(description="Permit single matches that swallow 60%+ of a field (dangerous; validate the preview first)"),
+    ] = False,
+    repair_escapes: Annotated[bool, Field(description="Repair common tool-call escaping mistakes (doubled backslashes, /.../ literals, JS named groups), reporting each repair")] = True,
+) -> str:
+    """Pre-flight check a search & replace without writing anything.
+
+    Compiles the pattern (translating JS-flavored input to Python re),
+    translates ``$1``/``$<name>`` replacement references, and reports every
+    problem with actionable messages: syntax errors with position and hint,
+    patterns that can match an empty string, references to groups the pattern
+    does not define, nested-quantifier backtracking risks, and — when ``path``
+    is given — over-broad matches measured against the preset's real content,
+    plus anchor/dot-all hints when a pattern found nothing.
+    """
+    try:
+        result: dict[str, Any]
+        if path is None:
+            gate = check_replace(
+                pattern,
+                replacement,
+                mode=mode,
+                case_sensitive=case_sensitive,
+                multiline=multiline,
+                dot_all=dot_all,
+                allow_broad=allow_broad_matches,
+                repair=repair_escapes,
+            )
+            gate.pop("_compiled", None)
+            result = dict(gate)
+        else:
+            preset = _load(path)
+            report = replace_in_preset(
+                preset,
+                pattern,
+                replacement,
+                mode=mode,
+                surfaces=surfaces,
+                category=category,
+                enabled_only=enabled_only,
+                case_sensitive=case_sensitive,
+                multiline=multiline,
+                dot_all=dot_all,
+                allow_broad=allow_broad_matches,
+                dry_run=True,
+                repair=repair_escapes,
+            )
+            result = {"file": path, "dry_run": True, "report": report}
+        result["valid"] = not any(f.get("severity") == "error" for f in result.get("findings", []))
+        if "report" in result:
+            result["valid"] = not any(f.get("severity") == "error" for f in result["report"].get("findings", []))
+        return _ok(result)
+    except ReplaceRejected as exc:
+        return _ok({
+            "valid": False,
+            "file": path if path else None,
+            "findings": exc.findings,
+            "hint": "fix the error findings and re-run this check before applying",
+        })
+    except Exception as exc:
+        return _err(type(exc).__name__, traceback.format_exc())
+
+
+@mcp.tool(
+    name="preset_replace_text",
+    annotations={
+        "title": "Search & replace text across a preset",
+        "readOnlyHint": False,
+        "destructiveHint": True,
+        "idempotentHint": False,
+        "openWorldHint": False,
+    },
+)
+async def preset_replace_text(
+    path: PathArg,
+    pattern: Annotated[
+        str,
+        Field(
+            description=(
+                "Find pattern. regex mode: a regular expression (JS-style /.../flags literals and "
+                "$1/$<name> replacement refs are accepted and translated to Python re). "
+                "literal mode: matched verbatim as plain text"
+            ),
+            min_length=1,
+        ),
+    ],
+    replacement: Annotated[str, Field(description="Replacement text", min_length=1)],
+    mode: Annotated[Literal["regex", "literal"], Field(description="Matching mode; literal skips all regex interpretation")] = "regex",
+    surfaces: _SURFACE_ARG = None,
+    category: Annotated[Optional[str], Field(description="Restrict to one category section (by category block name)")] = None,
+    enabled_only: Annotated[bool, Field(description="Only match inside enabled blocks")] = False,
+    case_sensitive: Annotated[bool, Field(description="Match case-sensitively (default: insensitive)")] = False,
+    multiline: Annotated[bool, Field(description="Regex mode: ^ and $ anchor per line instead of per field")] = False,
+    dot_all: Annotated[bool, Field(description="Regex mode: . also matches newlines (JS /s flag)")] = False,
+    allow_broad_matches: Annotated[
+        bool,
+        Field(description="Permit single matches that swallow 60%+ of a field; only set after reviewing preset_check_replace"),
+    ] = False,
+    dry_run: Annotated[bool, Field(description="Preview the replacement (full report) without saving")] = False,
+    repair_escapes: Annotated[bool, Field(description="Repair common tool-call escaping mistakes (doubled backslashes, /.../ literals, JS named groups), reporting each repair")] = True,
+) -> str:
+    """Search & replace text across preset block contents, block titles,
+    category contents, and category titles, then save.
+
+    The same validation gate as ``preset_check_replace`` runs first with the
+    preset's real content as samples: a malformed or over-broad pattern is
+    rejected with actionable findings and the file is left untouched. Use
+    ``preset_check_replace`` (or ``dry_run=true``) to preview before applying.
+    """
+    try:
+        preset = _load(path)
+        report = replace_in_preset(
+            preset,
+            pattern,
+            replacement,
+            mode=mode,
+            surfaces=surfaces,
+            category=category,
+            enabled_only=enabled_only,
+            case_sensitive=case_sensitive,
+            multiline=multiline,
+            dot_all=dot_all,
+            allow_broad=allow_broad_matches,
+            dry_run=dry_run,
+            repair=repair_escapes,
+        )
+        if not dry_run and report["changed"]:
+            _save(preset, path)
+        return _ok({
+            "file": path,
+            "dry_run": dry_run,
+            "saved": (not dry_run) and report["changed"],
+            **report,
+        })
+    except ReplaceRejected as exc:
+        return _err(
+            "replacement rejected; the file was NOT modified. Fix the flagged issues and retry "
+            "(or pass allow_broad_matches=true if the large capture is intentional)",
+            {"findings": exc.findings},
+        )
+    except Exception as exc:
+        return _err(type(exc).__name__, traceback.format_exc())
+
+
+
 @mcp.tool(
     name="preset_insert_prompt_variable",
     annotations={
@@ -1921,6 +2127,17 @@ async def preset_update_prompt_variable(
         bool,
         Field(description="When true (default), refuse to save when the merged variable fails validation; the file is left untouched"),
     ] = True,
+    rewrite_references: Annotated[
+        bool,
+        Field(
+            description=(
+                "When renaming, also rewrite every {{var::old}}/{{getvar::old}}-family macro "
+                "reference (including sub-syntax like {{var::old::ison::keys}}) in ALL block "
+                "contents and migrate the stored prompt-variable value key to the new name "
+                "(default true)"
+            ),
+        ),
+    ] = True,
 ) -> str:
     """Atomically patch one prompt variable definition and save the preset.
 
@@ -1931,8 +2148,9 @@ async def preset_update_prompt_variable(
     written: unknown option ids, duplicate option ids, reversed min/max, and
     duplicate variable names are rejected with actionable messages, and
     fields that do not apply to the variable's type are reported as warnings
-    instead of vanishing. Renaming a variable warns if the block content
-    still references the old {{var::name}} macro.
+    instead of vanishing. Renaming a variable also rewrites every
+    {{var::old}}/{{getvar::old}}-family macro reference in all block contents
+    and migrates the stored value key (unless rewrite_references=false).
     """
     try:
         preset = _load(path)
@@ -2004,12 +2222,31 @@ async def preset_update_prompt_variable(
         diagnostics += findings
 
         if var_name != var_def.get("name"):
+            new_name = var_def.get("name") or var_name
+            old_macro = "{{var::" + var_name + "}}"
+            new_macro = "{{var::" + new_name + "}}"
             content = block.get("content") or ""
-            old_refs = content.count(f"{{{{var::{var_name}}}}}") + content.count(f"{{{{getvar::{var_name}}}}}")
-            if old_refs:
+            old_refs = content.count(old_macro) + content.count("{{getvar::" + var_name + "}}")
+            if rewrite_references:
+                rewritten = rewrite_variable_references(preset, var_name, new_name)
+                if rewritten["content_references"] or rewritten["stored_values"]:
+                    stored_note = (
+                        f" and migrated {rewritten['stored_values']} stored value key(s)"
+                        if rewritten["stored_values"] else ""
+                    )
+                    note = {
+                        "severity": "info", "code": "rewrote_macro_references", "field": "name",
+                        "message": (
+                            f"rewrote {rewritten['content_references']} macro reference(s) to "
+                            f"{old_macro} across block contents{stored_note} to {new_macro}"
+                        ),
+                    }
+                    findings.append(note)
+                    diagnostics.append(note)
+            elif old_refs:
                 findings.append({
                     "severity": "warning", "code": "stale_macro_reference", "field": "name",
-                    "message": f"block content still references the old name {{{{var::{var_name}}}}} {old_refs} time(s); update the content separately",
+                    "message": f"block content still references the old name {old_macro} {old_refs} time(s); update the content separately",
                 })
                 diagnostics.append(findings[-1])
 
