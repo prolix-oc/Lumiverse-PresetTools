@@ -67,7 +67,7 @@ from .inspect import (
 )
 from .io import load, preset_blocks, save
 from .search import search_preset
-from .render import RenderEnv, render_preset
+from .render import RenderEnv, render_block, render_preset
 from .lumiverse import render_preset_live
 from .regex_lint import (
     engine_compile,
@@ -793,6 +793,81 @@ async def preset_render(
         if show_text:
             out["text"] = result.text
         return _ok(out)
+    except Exception as exc:
+        return _err(type(exc).__name__, traceback.format_exc())
+
+
+@mcp.tool(
+    name="preset_render_block",
+    annotations={
+        "title": "Render a single block in isolation",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+async def preset_render_block(
+    path: PathArg,
+    name: Annotated[str, Field(description="Exact block name to render", min_length=1)],
+    sample: Annotated[bool, Field(description="Use the built-in sample character/chat for data macros")] = True,
+    seed: Annotated[int, Field(description="RNG seed for dice/random/pick macros")] = 1234,
+    unknown_policy: Annotated[Literal["keep", "blank"], Field(description="Policy for unresolved macros: keep literal or blank")] = "keep",
+    prompt_variables: Annotated[
+        Optional[dict[str, Any]],
+        Field(
+            description=(
+                "Prompt-variable overrides for this render, keyed by variable name. "
+                "Each value is coerced per the variable's type (switch→0/1, "
+                "select/multiselect→option ids, number/slider→clamped). Wins over the "
+                "preset's stored values, so a conditional that reads {{var::name}} "
+                "can be tested against a specific value."
+            ),
+        ),
+    ] = None,
+    variables: Annotated[
+        Optional[dict[str, Any]],
+        Field(
+            description=(
+                "Seed engine-local variables — the state {{setvar}} writes and "
+                "{{getvar}} reads. Lets a conditional like "
+                "{{if::{{getvar::x}} == 1}} be tested directly, e.g. "
+                "variables={\"plot_active\": 1}."
+            ),
+        ),
+    ] = None,
+    with_prior_state: Annotated[
+        bool,
+        Field(
+            description=(
+                "Render every enabled block ordered before the target first "
+                "(keeping setvar side effects, discarding output) so chained "
+                "variable state reproduces exactly."
+            ),
+        ),
+    ] = False,
+) -> str:
+    """Render one block in isolation and report its text, tokens, and resulting variable state.
+
+    The debugging companion to preset_render: instead of rendering the whole
+    preset, render exactly one block — even a disabled one — with seeded
+    variables, to see how a conditional or macro behaves under specific state.
+    """
+    try:
+        preset = _load(path)
+        env = RenderEnv.sample() if sample else RenderEnv.empty()
+        env.seed = seed
+        env.unknown_policy = unknown_policy
+        env.__post_init__()
+        result = render_block(
+            preset,
+            name,
+            env,
+            variables=variables,
+            prompt_var_overrides=prompt_variables,
+            with_prior_state=with_prior_state,
+        )
+        return _ok({"file": path, **result})
     except Exception as exc:
         return _err(type(exc).__name__, traceback.format_exc())
 

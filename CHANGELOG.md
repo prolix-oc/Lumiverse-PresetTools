@@ -1,5 +1,23 @@
 # Changelog
 
+
+## Unreleased
+
+- New `preset_render_block` MCP tool + `preset_tools.render.render_block`:
+  render a single block in isolation (enabled or disabled) with seeded
+  engine-local variables (`variables={"x": 1}` seeds what `{{setvar}}` writes
+  and `{{getvar}}` reads) and optional `with_prior_state` to reproduce chained
+  `setvar` state from earlier blocks — no more hand-built test harnesses for
+  debugging one conditional.
+- Validation: unclosed wrapper macros are now errors. `{{if}}` keeps its
+  `unclosed-if` code; any other open/close-style macro left unclosed (today
+  `{{trim}}`, via the extended `SCOPED_HINT`) reports `unclosed-wrapper`.
+  Orphan close tags (`orphan-close`) were already errors. Found three dead
+  bare `{{trim}}` macros in ThreadBare's CoT blocks on first run.
+- Docs: corrected stale severities in the diagnostics table (unclosed-if,
+  empty-macro, else-outside-if, else-if-unsupported, and orphan-close are
+  errors, not warnings) and documented the new tool and check.
+
 ## 0.1.0 — 2026-08-15
 
 Initial packaged release.

@@ -33,7 +33,7 @@ This package is stout about that by default and transparent about it:
 ## What's inside
 
 - **`preset_tools`** — an importable Python library (see the quick start below).
-- **55 MCP tools** over stdio, grouped as:
+- **56 MCP tools** over stdio, grouped as:
 
 | Group | Tools |
 |---|---|
@@ -41,7 +41,7 @@ This package is stout about that by default and transparent about it:
 | Prompt variables | `preset_insert_prompt_variable`, `preset_list_prompt_variables`, `preset_update_prompt_variable`, `preset_remove_prompt_variable`, `preset_variable_report`, `preset_get_stored_prompt_variables`, `preset_set_stored_prompt_variable`, `preset_remove_stored_prompt_variable` |
 | Regex scripts | `regex_list_scripts`, `regex_get_script`, `regex_create_script`, `regex_update_script`, `regex_delete_script`, `regex_validate`, `regex_check_pattern` |
 | Validation & compare | `preset_validate`, `preset_compare`, `preset_diff`, `preset_check_seals`, `preset_set_seal`, `preset_mass_seal` |
-| Rendering & tokens | `preset_render`, `preset_extract_macros`, `preset_macro_reference`, `preset_token_count`, `preset_count_tokens`, `preset_dump_enabled` |
+| Rendering & tokens | `preset_render`, `preset_render_block`, `preset_extract_macros`, `preset_macro_reference`, `preset_token_count`, `preset_count_tokens`, `preset_dump_enabled` |
 | Backups | `preset_backup`, `preset_list_backups`, `preset_restore_backup` |
 | Character cards | `character_card_read`, `character_card_get_summary`, `character_card_get_field`, `character_card_field_stats`, `character_card_set_field`, `character_card_set_fields`, `character_card_validate` |
 

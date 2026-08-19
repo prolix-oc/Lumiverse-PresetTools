@@ -298,12 +298,19 @@ def _walk_structure(nodes, text, field_path, block_index, block_name, enabled,
                 "as a plain `{{else}}`. Nest an `{{if}}` inside the else branch "
                 "instead.", node.offset)
 
-        if nm == "if":
-            # A non-scoped, non-close `if` means there was no matching {{/if}}.
-            add(ERROR, "unclosed-if",
-                "`{{if}}` has no matching `{{/if}}` — the conditional degrades "
-                "to an inline true/empty value and any following text is NOT "
-                "conditional", node.offset)
+        # A non-scoped, non-close macro from SCOPED_HINT means its matching
+        # close tag never came — the wrapper silently degrades.
+        if nm in SCOPED_HINT:
+            if nm == "if":
+                add(ERROR, "unclosed-if",
+                    "`{{if}}` has no matching `{{/if}}` — the conditional degrades "
+                    "to an inline true/empty value and any following text is NOT "
+                    "conditional", node.offset)
+            else:
+                add(ERROR, "unclosed-wrapper",
+                    f"`{{{{{node.name}}}}}` has no matching `{{{{/{node.name}}}}}` — "
+                    "the wrapper is silently dropped and the body you meant to "
+                    "wrap renders outside it, unconditionally", node.offset)
 
         _check_macro_node(node, add, declared)
 

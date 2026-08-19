@@ -1092,6 +1092,90 @@ def render_preset(preset: dict, env: Optional[RenderEnv] = None, *,
     return result
 
 
+def render_block(preset: dict, name: str, env: Optional[RenderEnv] = None, *,
+                 variables: dict = None, prompt_var_overrides: dict = None,
+                 with_prior_state: bool = False, tokenize: bool = True,
+                 tokenizer_path: str = None) -> dict:
+    """Render ONE block in isolation — the debugging companion to render_preset.
+
+    Prompt variables are seeded exactly like render_preset (stored values over
+    creator defaults, ``prompt_var_overrides`` winning over both). ``variables``
+    seeds engine-local state (what ``{{setvar}}`` writes and ``{{getvar}}``
+    reads), so a conditional like ``{{if::{{getvar::x}} == 1}}`` can be tested
+    directly — no hand-built harness.
+
+    With ``with_prior_state=True`` every enabled block ordered before the
+    target renders first (output discarded, ``setvar`` side effects kept), so
+    chained state reproduces exactly. Works on disabled blocks too — that is
+    usually the point.
+
+    Returns a dict with the rendered ``text``, ``chars``, ``tokens`` (None if
+    the tokenizer is unavailable), ``unresolved`` (macros first surfacing in
+    the target block), ``local_variables`` (engine state after rendering),
+    ``prior_blocks_rendered``, and the block's ``index``/``enabled`` flag.
+    """
+    env = env or RenderEnv.sample()
+    defaults, flat, per_block = _resolve_prompt_vars(preset, prompt_var_overrides or {})
+    env.prompt_var_defaults.update(defaults)
+    for key, val in flat.items():
+        env.local[key] = val
+    for key, val in (variables or {}).items():
+        env.local[str(key)] = str(val)
+
+    blocks = preset_blocks(preset)
+    ordered = sorted(enumerate(blocks),
+                     key=lambda it: _POSITION_RANK.get(it[1].get("position", "pre_history"), 0))
+    pos = next((p for p, (_i, b) in enumerate(ordered) if b.get("name") == name), None)
+    if pos is None:
+        raise ValueError(f"no block named {name!r} in preset")
+    orig_idx, target = ordered[pos]
+
+    def _render_one(b) -> str:
+        # Mirror render_preset's per-block prompt-variable overlay.
+        block_values = per_block.get(b.get("id"), {})
+        saved: dict = {}
+        for key, val in block_values.items():
+            saved[key] = (key in env.local, env.local.get(key))
+            env.local[key] = val
+        try:
+            return render_text(b.get("content") or "", env)
+        finally:
+            for key, (existed, prior) in saved.items():
+                if existed:
+                    env.local[key] = prior
+                else:
+                    env.local.pop(key, None)
+
+    prior_rendered = 0
+    if with_prior_state:
+        for _i, b in ordered[:pos]:
+            if b.get("enabled") and (b.get("content") or "").strip():
+                _render_one(b)
+                prior_rendered += 1
+
+    unresolved_before = set(env.unresolved)
+    text = _normalize_block_text(_render_one(target))
+    tokens = None
+    if tokenize:
+        try:
+            from .tokenizer import get_tokenizer
+            tok = get_tokenizer(tokenizer_path)
+            tokens = len(tok.encode(text, add_special_tokens=False).ids)
+        except (ImportError, FileNotFoundError):
+            tokens = None
+    return {
+        "name": name,
+        "index": orig_idx,
+        "enabled": bool(target.get("enabled")),
+        "text": text,
+        "chars": len(text),
+        "tokens": tokens,
+        "unresolved": sorted(set(env.unresolved) - unresolved_before),
+        "local_variables": dict(sorted(env.local.items())),
+        "prior_blocks_rendered": prior_rendered,
+    }
+
+
 def render_and_tokenize(preset: dict, env: Optional[RenderEnv] = None,
                         **kw) -> RenderResult:
     """Alias for render_preset(..., tokenize=True)."""

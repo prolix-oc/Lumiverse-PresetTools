@@ -767,4 +767,4 @@ KNOWN_MACROS: frozenset[str] = (
 # Macros that are typically used as scoped open/close pairs. A bare opener with
 # no matching close is usually an authoring mistake (the body then renders
 # unconditionally / the macro degrades to an inline form).
-SCOPED_HINT: frozenset[str] = frozenset({"if"})
+SCOPED_HINT: frozenset[str] = frozenset({"if", "trim"})

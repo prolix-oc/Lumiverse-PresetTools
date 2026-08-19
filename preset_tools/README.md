@@ -210,6 +210,7 @@ can reference presets outside the workspace directory.
 | `preset_validate` | Macro syntax + variable-flow checker |
 | `preset_variable_report` | Per-variable read/write/check map |
 | `preset_render` | Render macros and tokenize the final prompt |
+| `preset_render_block` | Render one block in isolation with seeded variables — debug a conditional without hand-building harnesses |
 | `preset_compare` | Compare two presets block-by-block (word counts) |
 | `preset_diff` | Content-level diff of two presets (unified diff per block) |
 | `preset_edit_block_lines` | Edit a line, or a range if you explicitly provide `end_line` |
@@ -729,11 +730,12 @@ print(vr['local']['util_chaos'])   # {'declared': False, 'read_in': [...], 'writ
 |---|---|---|
 | `unterminated-macro` | error | `{{...` with no closing `}}` |
 | `parse-error` | error | the template could not be parsed at all |
-| `empty-macro` | warning | `{{` with no macro name — usually a stray/unescaped `{{` that swallows text to the next `}}` |
-| `unclosed-if` | warning | `{{if}}` with no matching `{{/if}}`; the body renders **unconditionally** (watch for `{{//if}}` typos) |
-| `else-outside-if` | warning | `{{else}}` with no enclosing `{{if}}...{{/if}}` |
-| `else-if-unsupported` | warning | `{{else if::...}}` — the engine **ignores the condition** and treats it as a plain `{{else}}` |
-| `orphan-close` | warning | a `{{/name}}` close tag with no matching opener (silently dropped) |
+| `empty-macro` | error | `{{` with no macro name — usually a stray/unescaped `{{` that swallows text to the next `}}` |
+| `unclosed-if` | error | `{{if}}` with no matching `{{/if}}`; the conditional degrades to an inline value and the body renders **unconditionally** (watch for `{{//if}}` typos) |
+| `unclosed-wrapper` | error | a wrapper macro (`{{trim}}` today) with no matching close — the wrapper is silently dropped and the body renders outside it, unconditionally |
+| `else-outside-if` | error | `{{else}}` with no enclosing `{{if}}...{{/if}}` |
+| `else-if-unsupported` | error | `{{else if::...}}` — the engine **ignores the condition** and treats it as a plain `{{else}}` |
+| `orphan-close` | error | a `{{/name}}` close tag with no matching opener (silently dropped) |
 | `never-set` | warning | a local var is read but never set anywhere and isn't a declared prompt variable → resolves to `""` |
 | `set-only-in-disabled` | warning | a var is read in an enabled block but its only setter block is **disabled** → empty until you enable it |
 | `read-before-set` | info | a var is read before the block that sets it (in render order) |
@@ -857,6 +859,13 @@ defaults, with `prompt_var_overrides` winning over both.
 The `preset_render` MCP tool exposes the same capability — pass
 `prompt_variables={name: value}` to test a value, or `live=True` to render with
 the live engine instead of the bundled port.
+
+`preset_render_block` is the debugging companion: it renders exactly one
+block — even a disabled one — with seeded state. Pass
+`variables={"gate": 1}` to seed engine-local `{{setvar}}`/`{{getvar}}` state
+and test `{{if::{{getvar::gate}} == 1}}` directly, or
+`with_prior_state=true` to first render every enabled block ordered before
+the target (keeping `setvar` side effects) so chained state reproduces.
 
 ## Common patterns
 
