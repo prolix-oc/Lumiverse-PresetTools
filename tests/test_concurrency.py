@@ -10,18 +10,20 @@ from pathlib import Path
 
 from preset_tools.blocks import new_block
 from preset_tools.io import save
-from preset_tools.mcp_server import mcp, preset_edit_block_line_range
+from preset_tools.mcp_server import mcp, preset_modify_block
 
 
-def _edit_line_after_barrier(path: str, line: int, content: str, barrier, results) -> None:
+def _apply_patch_after_barrier(path: str, line: int, content: str, barrier, results) -> None:
     """Run in a separate process so the sidecar file lock is genuinely tested."""
     barrier.wait(timeout=10)
-    raw = asyncio.run(preset_edit_block_line_range(
+    old = "one" if line == 1 else "three"
+    raw = asyncio.run(preset_modify_block(
         path=path,
         name="Concurrent",
-        start_line=line,
-        end_line=line,
-        replacement_content=content,
+        content=(
+            f"@@ -{line},1 +{line},1 @@\n-{old}\n\\ No newline at end of file\n"
+            f"+{content}\n\\ No newline at end of file\n"
+        ),
     ))
     results.put(json.loads(raw))
 
@@ -37,11 +39,11 @@ class ConcurrentWriteTest(unittest.IsolatedAsyncioTestCase):
             barrier = context.Barrier(2)
             results = context.Queue()
             first = context.Process(
-                target=_edit_line_after_barrier,
+                target=_apply_patch_after_barrier,
                 args=(str(path), 1, "ONE", barrier, results),
             )
             second = context.Process(
-                target=_edit_line_after_barrier,
+                target=_apply_patch_after_barrier,
                 args=(str(path), 3, "THREE", barrier, results),
             )
             first.start()
@@ -64,18 +66,16 @@ class ConcurrentWriteTest(unittest.IsolatedAsyncioTestCase):
             path = Path(temporary) / "preset.json"
             save({"blocks": [new_block("Concurrent", "one\ntwo\nthree")]}, str(path))
 
-            first = json.loads(await preset_edit_block_line_range(
-                path=str(path), name="Concurrent", start_line=1, end_line=1,
-                replacement_content="ONE",
+            first = json.loads(await preset_modify_block(
+                path=str(path), name="Concurrent", content="@@ -1,1 +1,1 @@\n-one\n+ONE\n",
             ))
             stale_revision = first["result"]["base_revision"]
-            await preset_edit_block_line_range(
-                path=str(path), name="Concurrent", start_line=2, end_line=2,
-                replacement_content="TWO",
+            await preset_modify_block(
+                path=str(path), name="Concurrent", content="@@ -2,1 +2,1 @@\n-two\n+TWO\n",
             )
-            rejected = json.loads(await preset_edit_block_line_range(
-                path=str(path), name="Concurrent", start_line=3, end_line=3,
-                replacement_content="THREE", expected_revision=stale_revision,
+            rejected = json.loads(await preset_modify_block(
+                path=str(path), name="Concurrent", content="@@ -3,1 +3,1 @@\n-three\n+THREE\n",
+                expected_revision=stale_revision,
             ))
 
             self.assertFalse(rejected["ok"])
@@ -86,7 +86,7 @@ class ConcurrentWriteTest(unittest.IsolatedAsyncioTestCase):
     async def test_write_schema_and_server_instructions_expose_concurrency_contract(self) -> None:
         write_tools = [
             "regex_create_script", "regex_update_script", "regex_delete_script",
-            "preset_modify_block", "preset_edit_block_lines", "preset_edit_block_line_range",
+            "preset_modify_block",
             "preset_replace_text", "preset_insert_prompt_variable", "preset_update_prompt_variable",
             "preset_remove_prompt_variable", "preset_set_stored_prompt_variable",
             "preset_remove_stored_prompt_variable", "preset_insert_block", "preset_delete_block",

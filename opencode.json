@@ -10,7 +10,8 @@
       ],
       "cwd": ".",
       "environment": {
-        "PRESET_TOOLS_WORKSPACE": "."
+        "PRESET_TOOLS_WORKSPACE": ".",
+        "PRESET_TOOLS_LUMIVERSE_ROOT": "/Users/darranhall/Projects/Lumiverse-Backend"
       },
       "enabled": true,
       "timeout": 10000

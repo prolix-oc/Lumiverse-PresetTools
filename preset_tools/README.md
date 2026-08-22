@@ -209,11 +209,9 @@ can reference presets outside the workspace directory.
 | `preset_render_block` | Render one block in isolation with seeded variables — debug a conditional without hand-building harnesses |
 | `preset_compare` | Compare two presets block-by-block (word counts) |
 | `preset_diff` | Content-level diff of two presets (unified diff per block) |
-| `preset_edit_block_lines` | Edit a line, or a range if you explicitly provide `end_line` |
-| `preset_edit_block_line_range` | Preferred way to replace an exact numbered line range and save |
 | `preset_check_replace` | Pre-flight a search & replace: compile, group refs, over-broad capture detection, live per-block preview |
 | `preset_replace_text` | Regex or literal search & replace across block contents/titles and category contents/titles, validated before saving |
-| `preset_modify_block` | Replace a block's content and save |
+| `preset_modify_block` | Apply a multi-hunk unified diff to a block, or replace its content wholesale |
 | `preset_insert_block` | Add a new block and save |
 | `preset_move_block` | Move a block to a new position and save |
 | `preset_clone_block` | Deep-copy a block (fresh id, new name) and save |
@@ -256,17 +254,31 @@ without writing, so refresh and retry rather than applying stale intent.
 Advisory locks cover all preset-tools processes; another editor must use the
 same `<preset>.lock` convention to participate in this guarantee.
 
-For exact range work, prefer the range-specific pair:
+For edits to existing block content, read the block and call
+`preset_modify_block` with a standard unified diff. One patch can contain
+multiple non-adjacent `@@` hunks and is applied as one atomic write. Each hunk
+must include enough unchanged context to match the block exactly; an outdated
+or ambiguous patch is rejected without saving.
 
-1. `preset_get_block_line_range`
-2. `preset_edit_block_line_range`
+For example, this changes two independent areas of the named block in one
+write (the optional `---`/`+++` headers identify the before/after view only):
 
-Use `preset_get_block_lines` when you want "from this line onward", and
-`preset_edit_block_lines` when you intentionally want single-line editing or a
-fallback tool with optional `end_line`.
+```diff
+@@ -2,3 +2,3 @@
+ context before
+-old first text
++new first text
+ context after
+@@ -18,2 +18,2 @@
+ context before second change
+-old second text
++new second text
+```
 
-Keep `preset_find_block`, `preset_show_block`, and `preset_modify_block` for
-whole-block inspection or replacement.
+Use `preset_modify_block` with full content only for an intentional whole-block
+rewrite. Line-oriented write tools are intentionally not exposed: patch context
+keeps the edit tied to the text the model actually read and preserves newline
+semantics.
 
 ### Backups
 
@@ -371,7 +383,9 @@ repo root.
 
 ## Targeting a Live Lumiverse Install
 
-If you are a Lumiverse developer and want the MCP server to always use the absolute latest macros from your local backend checkout instead of the bundled static digest, you have two options:
+If you are a Lumiverse developer and want the MCP server to make the absolute
+latest macros from a local backend checkout available alongside the bundled
+static digest, you have two options:
 
 ### Option A: Fully Automated (Recommended)
 
@@ -384,7 +398,7 @@ Simply add the `PRESET_TOOLS_LUMIVERSE_ROOT` environment variable to your `openc
 }
 ```
 
-When the MCP server starts, it will automatically detect the backend, use `bun` to extract the live macro registry, generate a fresh reference digest into a temporary folder, and serve that to the LLM. The same root also enables
+When the MCP server starts, it will automatically detect the backend, use `bun` to extract the live macro registry, and generate a fresh reference digest into a temporary folder. The model can then call `preset_macro_reference(source="live")` for the current checkout, `source="bundled"` for the package's checked-in digest, or leave `source` as `"auto"` (the default, which prefers live). The same root also enables
 [rendering presets against the live engine](#rendering-against-the-live-lumiverse-install)
 (`preset_render`'s `live=True`, or `preset_tools.lumiverse`).
 

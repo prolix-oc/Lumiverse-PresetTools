@@ -12,6 +12,117 @@ from typing import Any, Optional
 from .io import preset_blocks, preset_root, stored_prompt_vars
 
 
+_UNIFIED_HUNK = re.compile(
+    r"^@@ -(?P<old_start>\d+)(?:,(?P<old_count>\d+))? "
+    r"\+(?P<new_start>\d+)(?:,(?P<new_count>\d+))? @@(?:.*)$"
+)
+
+
+def is_unified_diff(text: str) -> bool:
+    """Return whether ``text`` contains a unified-diff hunk.
+
+    Block content itself can legitimately contain ``---``/``+++`` lines, so a
+    hunk header is the only reliable signal that a ``preset_modify_block``
+    payload is a patch rather than a whole-content replacement.
+    """
+    return any(_UNIFIED_HUNK.match(line) for line in text.splitlines())
+
+
+def apply_unified_diff(content: str, patch: str) -> str:
+    """Apply a strict unified diff to one block's content.
+
+    The block name is selected by the caller, so optional file headers are
+    informational only. Every hunk is validated against the original text;
+    malformed, stale, or overlapping hunks raise ``ValueError`` without
+    changing the caller's block.
+    """
+    patch_lines = patch.splitlines()
+    hunks: list[tuple[int, int, int, int, list[tuple[str, str]], bool]] = []
+    index = 0
+
+    while index < len(patch_lines):
+        line = patch_lines[index]
+        match = _UNIFIED_HUNK.match(line)
+        if match is None:
+            if line.startswith(("diff --git ", "index ", "--- ", "+++ ")):
+                index += 1
+                continue
+            if not line.strip():
+                index += 1
+                continue
+            raise ValueError(f"invalid unified diff line: {line!r}")
+
+        old_start = int(match.group("old_start"))
+        old_count = int(match.group("old_count") or "1")
+        new_start = int(match.group("new_start"))
+        new_count = int(match.group("new_count") or "1")
+        if old_start < 0 or new_start < 0:
+            raise ValueError("unified diff line numbers must be non-negative")
+
+        index += 1
+        rows: list[tuple[str, str]] = []
+        new_final_line_has_no_newline = False
+        while index < len(patch_lines) and not _UNIFIED_HUNK.match(patch_lines[index]):
+            row = patch_lines[index]
+            if row == r"\ No newline at end of file":
+                if not rows:
+                    raise ValueError("newline marker appears before a diff line")
+                if rows[-1][0] in ("+", " "):
+                    new_final_line_has_no_newline = True
+                index += 1
+                continue
+            if not row or row[0] not in (" ", "+", "-"):
+                raise ValueError(f"invalid unified diff hunk line: {row!r}")
+            rows.append((row[0], row[1:]))
+            index += 1
+
+        actual_old_count = sum(prefix in (" ", "-") for prefix, _ in rows)
+        actual_new_count = sum(prefix in (" ", "+") for prefix, _ in rows)
+        if actual_old_count != old_count or actual_new_count != new_count:
+            raise ValueError(
+                "unified diff hunk counts do not match its body "
+                f"(expected -{old_count}/+{new_count}, got -{actual_old_count}/+{actual_new_count})"
+            )
+        hunks.append((old_start, old_count, new_start, new_count, rows, new_final_line_has_no_newline))
+
+    if not hunks:
+        raise ValueError("a unified diff must contain at least one @@ hunk")
+
+    original_lines = content.splitlines()
+    updated_lines = list(original_lines)
+    original_ends_with_newline = _content_ends_with_newline(content)
+    ends_with_newline = original_ends_with_newline
+    offset = 0
+    prior_old_end = 0
+
+    for old_start, old_count, _new_start, _new_count, rows, no_newline in hunks:
+        # A zero-length hunk uses the line *after* its insertion point: -0,0
+        # means the beginning of the file and -N,0 means after old line N.
+        start = old_start if old_count == 0 else old_start - 1
+        if start < prior_old_end:
+            raise ValueError("unified diff hunks overlap or are out of order")
+        if start > len(original_lines) or start + old_count > len(original_lines):
+            raise ValueError("unified diff hunk is outside the block's content")
+
+        expected = [text for prefix, text in rows if prefix in (" ", "-")]
+        replacement = [text for prefix, text in rows if prefix in (" ", "+")]
+        current_start = start + offset
+        if updated_lines[current_start:current_start + old_count] != expected:
+            raise ValueError(
+                "unified diff context does not match the current block content; "
+                "refresh the block and retry"
+            )
+        updated_lines[current_start:current_start + old_count] = replacement
+        offset += len(replacement) - old_count
+        prior_old_end = start + old_count
+
+        if prior_old_end == len(original_lines):
+            ends_with_newline = bool(updated_lines) and not no_newline
+
+    separator = _line_separator(content)
+    return _join_content_lines(updated_lines, separator, ends_with_newline)
+
+
 def _slugify(name: str) -> str:
     """Convert a block name to a kebab-case sealedKey."""
     s = name.lower()

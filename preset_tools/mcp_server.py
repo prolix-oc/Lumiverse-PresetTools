@@ -28,6 +28,7 @@ import os
 import re
 import traceback
 import typing
+from difflib import unified_diff
 from io import StringIO
 from pathlib import Path
 from typing import Annotated, Any, Literal, Optional
@@ -46,11 +47,12 @@ from .blocks import (
     find_block_index,
     get_block_lines,
     get_seal_status,
+    apply_unified_diff,
     insert_block,
+    is_unified_diff,
     list_prompt_variables,
     mass_set_seal,
     modify_block,
-    modify_block_lines,
     move_block,
     new_block,
     remove_prompt_variable,
@@ -126,7 +128,9 @@ mcp = FastMCP(
         "a previously-read version, pass expected_revision from that read; a "
         "mismatch returns RevisionConflict and makes no change. Do not use a "
         "stale revision for multiple dependent edits—make them in call order or "
-        "refresh after a conflict."
+        "refresh after a conflict. For edits to existing block content, prefer "
+        "preset_modify_block with a standard unified diff containing one or more "
+        "@@ hunks. Use the read-only line tools only to inspect a small block portion."
     ),
 )
 
@@ -285,52 +289,6 @@ def _err(message: str, detail: Any = None) -> str:
     if detail is not None:
         out["detail"] = detail
     return json.dumps(out, indent=2, ensure_ascii=False)
-
-
-def _line_edit_result(
-    preset: dict,
-    *,
-    path: str,
-    name: str,
-    start_line: int,
-    end_line: int,
-    new_content: str,
-) -> str:
-    before = get_block_lines(preset, name, start_line=start_line, end_line=end_line)
-    block = modify_block_lines(
-        preset,
-        name,
-        start_line=start_line,
-        end_line=end_line,
-        new_content=new_content,
-    )
-    _save(preset, path)
-
-    inserted_line_count = 0 if new_content == "" else len(new_content.splitlines())
-    lines_after = []
-    if inserted_line_count > 0:
-        lines_after = get_block_lines(
-            preset,
-            name,
-            start_line=start_line,
-            end_line=start_line + inserted_line_count - 1,
-        )["lines"]
-
-    total_after = get_block_lines(preset, name)["total_lines"]
-    return _ok({
-        "file": path,
-        "block": name,
-        "saved": True,
-        "replaced_range": {
-            "start_line": before["start_line"],
-            "end_line": before["end_line"],
-        },
-        "removed_line_count": before["end_line"] - before["start_line"] + 1,
-        "inserted_line_count": inserted_line_count,
-        "total_lines_after": total_after,
-        "lines_after": lines_after,
-        "chars": len(block.get("content", "")),
-    })
 
 
 # ---------------------------------------------------------------------------
@@ -1675,7 +1633,7 @@ async def regex_delete_script(
 @mcp.tool(
     name="preset_modify_block",
     annotations={
-        "title": "Modify a block (whole content)",
+        "title": "Modify a block (unified diff or whole content)",
         "readOnlyHint": False,
         "destructiveHint": True,
         "idempotentHint": False,
@@ -1686,100 +1644,51 @@ async def regex_delete_script(
 async def preset_modify_block(
     path: PathArg,
     name: Annotated[str, Field(description="Exact name of the block to modify", min_length=1)],
-    content: Annotated[str, Field(description="New content for the block")],
-) -> str:
-    """Replace the content of a named block and save the preset.
-
-    Use this when you are intentionally replacing the entire block. For line-
-    level edits, prefer preset_edit_block_lines.
-    """
-    try:
-        preset = _load(path)
-        block = modify_block(preset, name, content)
-        _save(preset, path)
-        return _ok({"file": path, "block": name, "saved": True, "chars": len(block.get("content", ""))})
-    except Exception as exc:
-        return _err(type(exc).__name__, traceback.format_exc())
-
-
-@mcp.tool(
-    name="preset_edit_block_lines",
-    annotations={
-        "title": "Edit block lines (single line by default)",
-        "readOnlyHint": False,
-        "destructiveHint": True,
-        "idempotentHint": False,
-        "openWorldHint": False,
-    },
-)
-@_guard_preset_write
-async def preset_edit_block_lines(
-    path: PathArg,
-    name: Annotated[str, Field(description="Exact name of the block to modify", min_length=1)],
-    start_line: Annotated[int, Field(description="1-based first line to replace", ge=1)],
-    *,
-    end_line: Annotated[
-        Optional[int],
-        Field(description="1-based last line to replace, inclusive. Defaults to start_line.", ge=1),
-    ] = None,
-    content: Annotated[str, Field(description="Replacement text for the selected line range. Use an empty string to delete the range.")],
-) -> str:
-    """Replace a specific line or line range inside a block and save.
-
-    If end_line is omitted this edits only start_line. For exact range edits,
-    prefer preset_edit_block_line_range so end_line is required.
-    """
-    try:
-        preset = _load(path)
-        return _line_edit_result(
-            preset,
-            path=path,
-            name=name,
-            start_line=start_line,
-            end_line=end_line or start_line,
-            new_content=content,
-        )
-    except Exception as exc:
-        return _err(type(exc).__name__, traceback.format_exc())
-
-
-@mcp.tool(
-    name="preset_edit_block_line_range",
-    annotations={
-        "title": "Edit exact block line range",
-        "readOnlyHint": False,
-        "destructiveHint": True,
-        "idempotentHint": False,
-        "openWorldHint": False,
-    },
-)
-@_guard_preset_write
-async def preset_edit_block_line_range(
-    path: PathArg,
-    name: Annotated[str, Field(description="Exact name of the block to modify", min_length=1)],
-    start_line: Annotated[int, Field(description="1-based first line to replace", ge=1)],
-    end_line: Annotated[int, Field(description="1-based last line to replace, inclusive", ge=1)],
-    replacement_content: Annotated[
+    content: Annotated[
         str,
-        Field(description="Replacement text for the selected line range. Use an empty string to delete the range."),
+        Field(
+            description=(
+                "A unified diff patch for this block (preferred) or complete replacement content. "
+                "A patch may contain multiple @@ hunks; each hunk's unchanged/context and removed "
+                "lines must exactly match the current block. The named block is the target, so file "
+                "headers are optional."
+            )
+        ),
     ],
 ) -> str:
-    """Replace an exact line range inside a block and save.
+    """Apply a unified diff to a named block, or replace it wholesale, and save.
 
-    This is the preferred range-edit tool because both start_line and end_line
-    are required in the schema, so the request cannot silently collapse to a
-    single-line edit.
+    Prefer a standard unified diff when changing existing content. It can
+    express multiple independent multi-line hunks in one atomic write. Pass
+    full replacement content only when deliberately rewriting the whole block.
     """
     try:
         preset = _load(path)
-        return _line_edit_result(
-            preset,
-            path=path,
-            name=name,
-            start_line=start_line,
-            end_line=end_line,
-            new_content=replacement_content,
-        )
+        block = find_block(preset, name)
+        if block is None:
+            raise ValueError(f"Block '{name}' not found")
+        before = block.get("content", "") or ""
+        patch_mode = is_unified_diff(content)
+        after = apply_unified_diff(before, content) if patch_mode else content
+        block = modify_block(preset, name, after)
+        _save(preset, path)
+        diff = "".join(unified_diff(
+            before.splitlines(keepends=True),
+            after.splitlines(keepends=True),
+            fromfile=f"before/{name}",
+            tofile=f"after/{name}",
+            n=3,
+        ))
+        return _ok({
+            "file": path,
+            "block": name,
+            "saved": True,
+            "mode": "unified_diff" if patch_mode else "replace",
+            "additions": sum(line.startswith("+") and not line.startswith("+++") for line in diff.splitlines()),
+            "deletions": sum(line.startswith("-") and not line.startswith("---") for line in diff.splitlines()),
+            "diff": diff,
+            "chars": len(block.get("content", "")),
+        })
     except Exception as exc:
         return _err(type(exc).__name__, traceback.format_exc())
 
@@ -2981,9 +2890,11 @@ async def preset_restore_backup(
 # Macro reference
 # ---------------------------------------------------------------------------
 
-_MACRO_REF_DIR = Path(
-    os.environ.get("PRESET_TOOLS_MACRO_DIR", Path(__file__).resolve().parent)
+_BUNDLED_MACRO_REF_DIR = Path(__file__).resolve().parent
+_CONFIGURED_MACRO_REF_DIR = Path(
+    os.environ.get("PRESET_TOOLS_MACRO_DIR", _BUNDLED_MACRO_REF_DIR)
 ).resolve()
+_LIVE_MACRO_REF_DIR: Optional[Path] = None
 
 _LUMIVERSE_ROOT = os.environ.get("PRESET_TOOLS_LUMIVERSE_ROOT")
 if _LUMIVERSE_ROOT:
@@ -2992,15 +2903,29 @@ if _LUMIVERSE_ROOT:
 
     root_path = Path(_LUMIVERSE_ROOT).resolve()
     if root_path.exists():
-        _MACRO_REF_DIR = Path(tempfile.mkdtemp(prefix="preset_tools_macros_"))
+        live_ref_dir = Path(tempfile.mkdtemp(prefix="preset_tools_macros_"))
         try:
-            macro_updater.convert(root_path, _MACRO_REF_DIR / "macro_reference.json", quiet=True)
-            logging.getLogger("mcp").info(f"Auto-generated macro reference from {root_path} into {_MACRO_REF_DIR}")
+            macro_updater.convert(root_path, live_ref_dir / "macro_reference.json", quiet=True)
+            _LIVE_MACRO_REF_DIR = live_ref_dir
+            logging.getLogger("mcp").info(
+                f"Auto-generated live macro reference from {root_path} into {live_ref_dir}"
+            )
         except Exception as e:
             logging.getLogger("mcp").error(f"Failed to auto-generate macro reference: {e}")
-            _MACRO_REF_DIR = Path(
-                os.environ.get("PRESET_TOOLS_MACRO_DIR", Path(__file__).resolve().parent)
-            ).resolve()
+
+
+def _macro_reference_dir(source: Literal["auto", "bundled", "live"]) -> Path:
+    """Resolve the macro catalog selected by a macro-reference tool call."""
+    if source == "bundled":
+        return _BUNDLED_MACRO_REF_DIR
+    if source == "live":
+        if _LIVE_MACRO_REF_DIR is None:
+            raise ValueError(
+                "live macro reference is unavailable; set PRESET_TOOLS_LUMIVERSE_ROOT "
+                "to a valid Lumiverse checkout and restart the server"
+            )
+        return _LIVE_MACRO_REF_DIR
+    return _LIVE_MACRO_REF_DIR or _CONFIGURED_MACRO_REF_DIR
 
 @mcp.tool(
     name="preset_macro_reference",
@@ -3017,16 +2942,34 @@ async def preset_macro_reference(
     category: Annotated[Optional[str], Field(description="Filter to a single category (e.g. 'String' or 'Iteration')")] = None,
     search: Annotated[Optional[str], Field(description="Filter macros whose purpose/usage contains this substring")] = None,
     limit: Annotated[int, Field(description="Maximum macros to return when filtering", ge=1, le=500)] = 100,
+    source: Annotated[
+        Literal["auto", "bundled", "live"],
+        Field(
+            description=(
+                "Catalog to query: 'live' uses the configured Lumiverse checkout's "
+                "runtime registry, 'bundled' uses this package's checked-in digest, "
+                "and 'auto' (default) prefers live when available. Use 'live' for "
+                "questions about the current checkout; use 'bundled' for the shipped "
+                "versioned reference."
+            )
+        ),
+    ] = "auto",
 ) -> str:
     """Return the Lumiverse macro reference digest.
 
     Use this when you need to know what a macro does, what arguments it takes,
-    or what aliases exist. The default markdown format is human-readable; use
-    json for structured data.
+    or what aliases exist. Select ``source="live"`` to inspect a configured
+    checkout's current runtime registry. The default markdown format is
+    human-readable; use json for structured data.
     """
     try:
+        ref_dir = _macro_reference_dir(source)
+    except ValueError as exc:
+        return _err(str(exc))
+
+    try:
         if format == "markdown":
-            text = (_MACRO_REF_DIR / "macro_reference.md").read_text(encoding="utf-8")
+            text = (ref_dir / "macro_reference.md").read_text(encoding="utf-8")
             if category:
                 # Return the single category section if found
                 pattern = re.compile(rf"(## {re.escape(category)}\n.*?)(?=\n## |\Z)", re.S)
@@ -3070,7 +3013,7 @@ async def preset_macro_reference(
             return text
 
         # json format
-        data = json.loads((_MACRO_REF_DIR / "macro_reference.json").read_text(encoding="utf-8"))
+        data = json.loads((ref_dir / "macro_reference.json").read_text(encoding="utf-8"))
         macros = data["macros"]
         if category:
             macros = [m for m in macros if m["category"] == category]

@@ -6,8 +6,6 @@ from pathlib import Path
 from preset_tools import get_block_lines, modify_block_lines, new_block, save
 from preset_tools.mcp_server import (
     mcp,
-    preset_edit_block_line_range,
-    preset_edit_block_lines,
     preset_get_block_line_range,
     preset_get_block_lines,
 )
@@ -92,8 +90,8 @@ class BlockLineHelpersTest(unittest.TestCase):
             )
 
 
-class MCPBlockLineToolsTest(unittest.IsolatedAsyncioTestCase):
-    async def test_mcp_line_tools_round_trip(self) -> None:
+class MCPBlockLineReadToolsTest(unittest.IsolatedAsyncioTestCase):
+    async def test_mcp_line_read_tool_round_trip(self) -> None:
         preset = _sample_preset("one\ntwo\nthree\n")
 
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmpdir:
@@ -111,26 +109,7 @@ class MCPBlockLineToolsTest(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(before["ok"])
             self.assertEqual(before["result"]["lines"][0], {"line": 2, "text": "two"})
 
-            edit_raw = await preset_edit_block_lines(
-                path=rel_path,
-                name="Voice Shaping",
-                start_line=2,
-                end_line=3,
-                content="TWO\nTHREE",
-            )
-            edit = json.loads(edit_raw)
-            self.assertTrue(edit["ok"])
-            self.assertEqual(edit["result"]["removed_line_count"], 2)
-            self.assertEqual(edit["result"]["inserted_line_count"], 2)
-            self.assertEqual(
-                edit["result"]["lines_after"],
-                [
-                    {"line": 2, "text": "TWO"},
-                    {"line": 3, "text": "THREE"},
-                ],
-            )
-
-    async def test_mcp_exact_range_tools_round_trip(self) -> None:
+    async def test_mcp_exact_range_read_tool_round_trip(self) -> None:
         preset = _sample_preset("one\ntwo\nthree\nfour\n")
 
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmpdir:
@@ -148,37 +127,10 @@ class MCPBlockLineToolsTest(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(before["ok"])
             self.assertEqual(before["result"]["text"], "two\nthree")
 
-            edit_raw = await preset_edit_block_line_range(
-                path=rel_path,
-                name="Voice Shaping",
-                start_line=2,
-                end_line=3,
-                replacement_content="TWO\nTHREE",
-            )
-            edit = json.loads(edit_raw)
-            self.assertTrue(edit["ok"])
-            self.assertEqual(
-                edit["result"]["lines_after"],
-                [
-                    {"line": 2, "text": "TWO"},
-                    {"line": 3, "text": "THREE"},
-                ],
-            )
-
-
 class MCPBlockLineSchemaTest(unittest.TestCase):
-    def test_exact_range_edit_schema_requires_end_line(self) -> None:
-        tool = mcp._tool_manager._tools["preset_edit_block_line_range"]
-        params = tool.parameters
-
-        self.assertEqual(
-            list(params["properties"]),
-            ["path", "name", "start_line", "end_line", "replacement_content", "expected_revision"],
-        )
-        self.assertEqual(
-            params["required"],
-            ["path", "name", "start_line", "end_line", "replacement_content"],
-        )
+    def test_line_write_tools_are_not_exposed(self) -> None:
+        self.assertNotIn("preset_edit_block_lines", mcp._tool_manager._tools)
+        self.assertNotIn("preset_edit_block_line_range", mcp._tool_manager._tools)
 
     def test_exact_range_read_schema_requires_end_line(self) -> None:
         tool = mcp._tool_manager._tools["preset_get_block_line_range"]
